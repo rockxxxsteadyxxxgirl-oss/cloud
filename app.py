@@ -84,8 +84,8 @@ def build_line_chart(chart_df: pd.DataFrame) -> alt.Chart:
         alt.Chart(chart_df)
         .mark_line(point=True)
         .encode(
-            x=alt.X("time:T", title="日時"),
-            y=alt.Y("cloud_cover:Q", title="雲量 (%)", scale=alt.Scale(domain=[0, 100])),
+            x=alt.X("time:T", title="日時", scale=alt.Scale(nice=False, clamp=True)),
+            y=alt.Y("cloud_cover:Q", title="雲量 (%)", scale=alt.Scale(domain=[0, 100], clamp=True)),
             color=alt.Color("model:N", title="モデル"),
             tooltip=[
                 alt.Tooltip("time:T", title="日時"),
@@ -94,7 +94,6 @@ def build_line_chart(chart_df: pd.DataFrame) -> alt.Chart:
             ],
         )
         .configure_mark(strokeWidth=3)
-        .interactive()
     )
 
 
