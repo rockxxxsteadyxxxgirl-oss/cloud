@@ -7,6 +7,8 @@ import pandas as pd
 import requests
 import streamlit as st
 from streamlit_folium import st_folium
+from geopy.geocoders import Nominatim
+from textwrap import wrap
 
 API_URL = "https://api.open-meteo.com/v1/forecast"
 
@@ -103,6 +105,12 @@ def update_selected_location(lat: float, lon: float) -> None:
     st.session_state.lat_input = lat
     st.session_state.lon_input = lon
     st.session_state.pop("latest_data", None)
+    try:
+        geocoder = Nominatim(user_agent="cloud_cover_app", timeout=5)
+        location = geocoder.reverse((lat, lon), language="ja")
+        st.session_state.selected_place_name = location.address if location else "地名を取得できませんでした"
+    except Exception:
+        st.session_state.selected_place_name = "地名を取得できませんでした"
 
 
 def main() -> None:
@@ -112,6 +120,8 @@ def main() -> None:
 
     if "selected_location" not in st.session_state:
         st.session_state.selected_location = {"lat": 35.0, "lon": 139.0}
+    if "selected_place_name" not in st.session_state:
+        st.session_state.selected_place_name = "未取得"
     if "lat_input" not in st.session_state:
         st.session_state.lat_input = st.session_state.selected_location["lat"]
     if "lon_input" not in st.session_state:
@@ -134,10 +144,14 @@ def main() -> None:
             if lat_click is not None and lon_click is not None:
                 st.info(f"クリックした地点: {lat_click:.4f}, {lon_click:.4f}")
                 update_selected_location(lat_click, lon_click)
-        st.caption(
-            f"現在の座標: {st.session_state.selected_location['lat']:.4f}, "
-            f"{st.session_state.selected_location['lon']:.4f}"
-        )
+    st.caption(
+        f"現在の座標: {st.session_state.selected_location['lat']:.4f}, "
+        f"{st.session_state.selected_location['lon']:.4f}"
+    )
+    if "selected_place_name" in st.session_state:
+        place = st.session_state.selected_place_name or ""
+        wrapped = "\n".join(wrap(place, 25))
+        st.caption(wrapped)
 
     with col_inputs:
         st.subheader("緯度・経度を直接入力")
@@ -153,6 +167,9 @@ def main() -> None:
             update_selected_location(lat_value, lon_value)
         st.metric("緯度", f"{st.session_state.selected_location['lat']:.4f}")
         st.metric("経度", f"{st.session_state.selected_location['lon']:.4f}")
+        place = st.session_state.get("selected_place_name", "未取得") or "未取得"
+        wrapped = "\n".join(wrap(place, 25))
+        st.text_area("地名", wrapped, height=80)
 
     st.markdown("---")
 
