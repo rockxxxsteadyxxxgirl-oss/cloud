@@ -6,22 +6,24 @@ import folium
 import pandas as pd
 import requests
 import streamlit as st
-from streamlit_folium import st_folium
 from geopy.geocoders import Nominatim
+from streamlit_folium import st_folium
 from textwrap import wrap
 
 API_URL = "https://api.open-meteo.com/v1/forecast"
 
-FORECAST_MODELS = {
-    "ECMWF IFS 0.25°": "ecmwf_ifs025",
-    "NOAA GFS 0.25°": "gfs_seamless",
-    "ICON Global 0.25°": "icon_global",
-    "JMA MSM 5km": "jma_msm",
-}
+MODEL_INFOS = [
+    ("ECMWF IFS 0.25°", "ecmwf_ifs025", "ECMWF の全球モデル。0.25°グリッドで広域の雲量傾向をつかみやすい。"),
+    ("NOAA GFS 0.25°", "gfs_seamless", "米国 NOAA の全球予報システム。世界中の雲量・風を広く捉えます。"),
+    ("ICON Global 0.25°", "icon_global", "ドイツ気象庁（DWD）の ICON グローバルモデル。高解像度の全球予報。"),
+    ("JMA GSM 20km", "jma_gsm", "気象庁 GSM。約20km メッシュで数日先の傾向を把握できます。"),
+    ("JMA MSM 5km", "jma_msm", "気象庁 MSM。5km メッシュで日本域の短期予測に強みがあります。"),
+]
+
+FORECAST_MODELS = {name: code for name, code, _ in MODEL_INFOS}
 
 
 def round_coord(value: float) -> float:
-    """Open-Meteo のキャッシュ粒度に合わせて四捨五入する。"""
     return round(value, 4)
 
 
@@ -54,7 +56,6 @@ def fetch_forecast(lat: float, lon: float, model: str) -> pd.DataFrame:
     except (TypeError, ValueError):
         df["time"] = df["time"].dt.tz_localize(None)
         timezone = "UTC"
-    df["model"] = model
     df["timezone"] = timezone
     return df
 
@@ -72,9 +73,9 @@ def filter_next_hours(df: pd.DataFrame, hours: int = 48) -> pd.DataFrame:
 
 
 def prepare_chart_data(timeseries: pd.DataFrame) -> pd.DataFrame:
-    chart_df = timeseries.melt("time", var_name="モデル", value_name="雲量[%]")
-    chart_df["雲量[%]"] = pd.to_numeric(chart_df["雲量[%]"], errors="coerce")
-    chart_df = chart_df.dropna(subset=["雲量[%]"])
+    chart_df = timeseries.melt("time", var_name="model", value_name="cloud_cover")
+    chart_df["cloud_cover"] = pd.to_numeric(chart_df["cloud_cover"], errors="coerce")
+    chart_df = chart_df.dropna(subset=["cloud_cover"])
     return chart_df
 
 
@@ -84,18 +85,15 @@ def build_line_chart(chart_df: pd.DataFrame) -> alt.Chart:
         .mark_line(point=True)
         .encode(
             x=alt.X("time:T", title="日時"),
-            y=alt.Y(
-                "雲量[%]:Q",
-                title="雲量 (%)",
-                scale=alt.Scale(domain=[0, 100]),
-            ),
-            color=alt.Color("モデル:N", title="モデル"),
+            y=alt.Y("cloud_cover:Q", title="雲量 (%)", scale=alt.Scale(domain=[0, 100])),
+            color=alt.Color("model:N", title="モデル"),
             tooltip=[
                 alt.Tooltip("time:T", title="日時"),
-                alt.Tooltip("モデル:N", title="モデル"),
-                alt.Tooltip("雲量[%]:Q", title="雲量 (%)"),
+                alt.Tooltip("model:N", title="モデル"),
+                alt.Tooltip("cloud_cover:Q", title="雲量 (%)"),
             ],
         )
+        .configure_mark(strokeWidth=3)
         .interactive()
     )
 
@@ -116,7 +114,7 @@ def update_selected_location(lat: float, lon: float) -> None:
 def main() -> None:
     st.set_page_config(page_title="雲量比較ダッシュボード", layout="wide")
     st.title("雲量比較ダッシュボード")
-    st.caption("Open-Meteo の ECMWF / GFS / ICON / MSM モデルから雲量を比較します。")
+    st.caption("Open-Meteo の各モデルから雲量を比較します。")
 
     if "selected_location" not in st.session_state:
         st.session_state.selected_location = {"lat": 35.0, "lon": 139.0}
@@ -145,14 +143,11 @@ def main() -> None:
                 st.info(f"クリックした地点: {lat_click:.4f}, {lon_click:.4f}")
                 update_selected_location(lat_click, lon_click)
                 st.rerun()
-    st.caption(
-        f"現在の座標: {st.session_state.selected_location['lat']:.4f}, "
-        f"{st.session_state.selected_location['lon']:.4f}"
-    )
-    if "selected_place_name" in st.session_state:
-        place = st.session_state.selected_place_name or ""
-        wrapped = "\n".join(wrap(place, 25))
-        st.caption(wrapped)
+        st.caption(
+            f"現在の座標: {st.session_state.selected_location['lat']:.4f}, "
+            f"{st.session_state.selected_location['lon']:.4f}"
+        )
+        st.caption("\n".join(wrap(st.session_state.get("selected_place_name", "未取得") or "未取得", 25)))
 
     with col_inputs:
         st.subheader("緯度・経度を直接入力")
@@ -169,9 +164,11 @@ def main() -> None:
             st.rerun()
         st.metric("緯度", f"{st.session_state.selected_location['lat']:.4f}")
         st.metric("経度", f"{st.session_state.selected_location['lon']:.4f}")
-        place = st.session_state.get("selected_place_name", "未取得") or "未取得"
-        wrapped = "\n".join(wrap(place, 25))
-        st.text_area("地名", wrapped, height=80)
+        st.text_area(
+            "地名",
+            "\n".join(wrap(st.session_state.get("selected_place_name", "未取得") or "未取得", 25)),
+            height=80,
+        )
 
     st.markdown("---")
 
@@ -223,13 +220,15 @@ def main() -> None:
     if chart_df.empty:
         st.info("各モデルで有効な雲量データを取得できませんでした。")
     else:
-        st.line_chart(
-            chart_df.pivot(index="time", columns="モデル", values="雲量[%]").sort_index(),
-            height=360,
-        )
+        st.altair_chart(build_line_chart(chart_df), use_container_width=True)
 
     st.subheader("詳細データ")
     st.dataframe(ts_df, use_container_width=True, height=360)
+
+    st.markdown("---")
+    st.subheader("モデルの概要")
+    for name, _, desc in MODEL_INFOS:
+        st.markdown(f"**{name}**: {desc}")
 
 
 if __name__ == "__main__":
