@@ -80,11 +80,30 @@ def prepare_chart_data(timeseries: pd.DataFrame) -> pd.DataFrame:
 
 
 def build_line_chart(chart_df: pd.DataFrame) -> alt.Chart:
+    axis_values = None
+    if not chart_df.empty:
+        start = chart_df["time"].min().floor("H")
+        end = chart_df["time"].max().ceil("H")
+        hourly = pd.date_range(start, end, freq="1H")
+        axis_values = [
+            {"year": ts.year, "month": ts.month, "date": ts.day, "hours": ts.hour, "minutes": ts.minute}
+            for ts in hourly
+        ]
     return (
         alt.Chart(chart_df)
         .mark_line(point=True)
         .encode(
-            x=alt.X("time:T", title="日時", scale=alt.Scale(nice=False, clamp=True)),
+            x=alt.X(
+                "time:T",
+                title="日時 (日付＋時刻)",
+                scale=alt.Scale(nice=False, clamp=True),
+                axis=alt.Axis(
+                    format="%m/%d %H:%M",
+                    values=axis_values,
+                    labelOverlap=False,
+                    labelAngle=-45,
+                ),
+            ),
             y=alt.Y("cloud_cover:Q", title="雲量 (%)", scale=alt.Scale(domain=[0, 100], clamp=True)),
             color=alt.Color("model:N", title="モデル"),
             tooltip=[
