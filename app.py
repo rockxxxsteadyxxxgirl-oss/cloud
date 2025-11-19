@@ -146,14 +146,20 @@ def main() -> None:
     current_lat = st.session_state.selected_location["lat"]
     current_lon = st.session_state.selected_location["lon"]
 
-    col_map, col_inputs = st.columns([2, 1])
+    col_map, col_inputs = st.columns([5, 1])
     with col_map:
         st.subheader("地図から地点を選択")
         st.write("マップをクリックすると選択中の座標が更新されます。")
         map_fig = folium.Map(location=[current_lat, current_lon], zoom_start=5, control_scale=True)
         folium.LatLngPopup().add_to(map_fig)
         folium.Marker([current_lat, current_lon], tooltip=f"{current_lat:.3f}, {current_lon:.3f}").add_to(map_fig)
-        map_state = st_folium(map_fig, height=420, key="forecast_map", returned_objects=["last_clicked"])
+        map_state = st_folium(
+            map_fig,
+            width=1100,
+            height=540,
+            key="forecast_map",
+            returned_objects=["last_clicked"],
+        )
         if map_state and map_state.get("last_clicked"):
             lat_click = map_state["last_clicked"].get("lat")
             lon_click = map_state["last_clicked"].get("lng")
