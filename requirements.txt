@@ -1,0 +1,8 @@
+streamlit
+requests
+pandas
+numpy
+folium
+streamlit-folium
+
+altair
