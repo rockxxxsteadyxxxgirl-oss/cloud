@@ -144,6 +144,7 @@ def main() -> None:
             if lat_click is not None and lon_click is not None:
                 st.info(f"クリックした地点: {lat_click:.4f}, {lon_click:.4f}")
                 update_selected_location(lat_click, lon_click)
+                st.rerun()
     st.caption(
         f"現在の座標: {st.session_state.selected_location['lat']:.4f}, "
         f"{st.session_state.selected_location['lon']:.4f}"
@@ -165,6 +166,7 @@ def main() -> None:
             lon_value, st.session_state.selected_location["lon"], abs_tol=1e-4
         ):
             update_selected_location(lat_value, lon_value)
+            st.rerun()
         st.metric("緯度", f"{st.session_state.selected_location['lat']:.4f}")
         st.metric("経度", f"{st.session_state.selected_location['lon']:.4f}")
         place = st.session_state.get("selected_place_name", "未取得") or "未取得"
