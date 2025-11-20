@@ -105,7 +105,7 @@ def build_line_chart(chart_df: pd.DataFrame) -> alt.Chart:
                 ),
             ),
             y=alt.Y("cloud_cover:Q", title="雲量 (%)", scale=alt.Scale(domain=[0, 100], clamp=True)),
-            color=alt.Color("model:N", title="モデル"),
+            color=alt.Color("model:N", title="モデル", legend=alt.Legend(orient="bottom")),
             tooltip=[
                 alt.Tooltip("time:T", title="日時"),
                 alt.Tooltip("model:N", title="モデル"),
@@ -142,6 +142,12 @@ def main() -> None:
         st.session_state.lat_input = st.session_state.selected_location["lat"]
     if "lon_input" not in st.session_state:
         st.session_state.lon_input = st.session_state.selected_location["lon"]
+    if "saved_locations" not in st.session_state:
+        st.session_state.saved_locations = []
+    if "save_label" not in st.session_state:
+        st.session_state.save_label = ""
+    if "saved_select" not in st.session_state:
+        st.session_state.saved_select = ""
 
     current_lat = st.session_state.selected_location["lat"]
     current_lon = st.session_state.selected_location["lon"]
@@ -193,6 +199,55 @@ def main() -> None:
             "\n".join(wrap(st.session_state.get("selected_place_name", "未取得") or "未取得", 25)),
             height=80,
         )
+
+        st.subheader("地点登録")
+        st.text_input("地点ラベル (省略可)", key="save_label")
+        if st.button("現在の地点を登録", use_container_width=True):
+            label = st.session_state.save_label.strip()
+            saved = st.session_state.saved_locations
+            if not label:
+                label = f"地点 {len(saved) + 1}"
+
+            # 既存ラベルがあれば更新、なければ追加
+            replaced = False
+            for loc in saved:
+                if loc["name"] == label:
+                    loc["lat"] = st.session_state.selected_location["lat"]
+                    loc["lon"] = st.session_state.selected_location["lon"]
+                    replaced = True
+                    break
+            if not replaced:
+                if len(saved) >= 20:
+                    st.warning("20件を超えると最も古い地点から上書きします。")
+                    saved.pop(0)
+                saved.append(
+                    {
+                        "name": label,
+                        "lat": st.session_state.selected_location["lat"],
+                        "lon": st.session_state.selected_location["lon"],
+                    }
+                )
+            st.success(f"「{label}」を登録しました。")
+
+        if st.session_state.saved_locations:
+            options = [
+                f"{loc['name']} ({loc['lat']:.2f}, {loc['lon']:.2f})"
+                for loc in st.session_state.saved_locations
+            ]
+            st.selectbox(
+                "登録済み地点",
+                options=options,
+                key="saved_select",
+                help="呼び出したい地点を選択してください。",
+            )
+            if st.button("選択した地点を呼び出す", use_container_width=True):
+                idx = options.index(st.session_state.saved_select)
+                target = st.session_state.saved_locations[idx]
+                update_selected_location(target["lat"], target["lon"])
+                st.info(f"{target['name']} を読み込みました。")
+                st.rerun()
+        else:
+            st.info("まだ登録された地点はありません。")
 
     st.markdown("---")
 
