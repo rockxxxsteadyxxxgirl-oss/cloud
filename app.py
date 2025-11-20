@@ -79,7 +79,7 @@ def prepare_chart_data(timeseries: pd.DataFrame) -> pd.DataFrame:
     return chart_df
 
 
-def build_line_chart(chart_df: pd.DataFrame) -> alt.Chart:
+def build_line_chart(chart_df: pd.DataFrame, *, mobile: bool = False) -> alt.Chart:
     axis_values = None
     if not chart_df.empty:
         start = chart_df["time"].min().floor("H")
@@ -101,20 +101,30 @@ def build_line_chart(chart_df: pd.DataFrame) -> alt.Chart:
                     format="%m/%d %H:%M",
                     values=axis_values,
                     labelOverlap=False,
-                    labelAngle=-45,
+                    labelAngle=-80 if mobile else -45,
+                    labelFontSize=9 if mobile else 12,
+                    titleFontSize=12 if mobile else 14,
                 ),
             ),
             y=alt.Y("cloud_cover:Q", title="雲量 (%)", scale=alt.Scale(domain=[0, 100], clamp=True)),
-            color=alt.Color("model:N", title="モデル", legend=alt.Legend(orient="bottom")),
+            color=alt.Color(
+                "model:N",
+                title="モデル",
+                legend=alt.Legend(
+                    orient="bottom",
+                    columns=2 if mobile else 3,
+                    labelFontSize=10 if mobile else 12,
+                ),
+            ),
             tooltip=[
                 alt.Tooltip("time:T", title="日時"),
                 alt.Tooltip("model:N", title="モデル"),
                 alt.Tooltip("cloud_cover:Q", title="雲量 (%)"),
             ],
         )
+        .properties(height=340 if mobile else 360)
         .configure_mark(strokeWidth=3)
     )
-
 
 def update_selected_location(lat: float, lon: float) -> None:
     st.session_state.selected_location = {"lat": lat, "lon": lon}
@@ -149,11 +159,23 @@ def main() -> None:
     if "saved_select" not in st.session_state:
         st.session_state.saved_select = ""
 
+    with st.sidebar:
+        mobile_mode = st.checkbox(
+            "モバイル表示モード",
+            value=False,
+            help="スマートフォンなど画面幅が狭い端末向けに表示を調整します。",
+        )
+
     current_lat = st.session_state.selected_location["lat"]
     current_lon = st.session_state.selected_location["lon"]
 
-    col_map, col_inputs = st.columns([5, 1])
-    with col_map:
+    if mobile_mode:
+        map_container = st.container()
+        input_container = st.container()
+    else:
+        map_container, input_container = st.columns([5, 1])
+
+    with map_container:
         st.subheader("地図から地点を選択")
         st.write("マップをクリックすると選択中の座標が更新されます。")
         map_fig = folium.Map(location=[current_lat, current_lon], zoom_start=5, control_scale=True)
@@ -161,8 +183,8 @@ def main() -> None:
         folium.Marker([current_lat, current_lon], tooltip=f"{current_lat:.3f}, {current_lon:.3f}").add_to(map_fig)
         map_state = st_folium(
             map_fig,
-            width=1100,
-            height=540,
+            width=None if mobile_mode else 1100,
+            height=420 if mobile_mode else 540,
             key="forecast_map",
             returned_objects=["last_clicked"],
         )
@@ -179,7 +201,7 @@ def main() -> None:
         )
         st.caption("\n".join(wrap(st.session_state.get("selected_place_name", "未取得") or "未取得", 25)))
 
-    with col_inputs:
+    with input_container:
         st.subheader("緯度・経度を直接入力")
         lat_value = st.number_input(
             "緯度", min_value=-90.0, max_value=90.0, value=float(st.session_state.lat_input), step=0.1
@@ -299,7 +321,7 @@ def main() -> None:
     if chart_df.empty:
         st.info("各モデルで有効な雲量データを取得できませんでした。")
     else:
-        st.altair_chart(build_line_chart(chart_df), use_container_width=True)
+        st.altair_chart(build_line_chart(chart_df, mobile=mobile_mode), use_container_width=True)
 
     st.subheader("詳細データ")
     st.dataframe(ts_df, use_container_width=True, height=360)
