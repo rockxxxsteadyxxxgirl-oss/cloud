@@ -89,6 +89,7 @@ def build_line_chart(chart_df: pd.DataFrame, *, mobile: bool = False) -> alt.Cha
             {"year": ts.year, "month": ts.month, "date": ts.day, "hours": ts.hour, "minutes": ts.minute}
             for ts in hourly
         ]
+    chart_width = 1200 if mobile else None
     return (
         alt.Chart(chart_df)
         .mark_line(point=True)
@@ -122,9 +123,45 @@ def build_line_chart(chart_df: pd.DataFrame, *, mobile: bool = False) -> alt.Cha
                 alt.Tooltip("cloud_cover:Q", title="雲量 (%)"),
             ],
         )
-        .properties(height=340 if mobile else 360)
+        .properties(height=340 if mobile else 360, width=chart_width)
         .configure_mark(strokeWidth=3)
     )
+
+
+def build_heatmap(chart_df: pd.DataFrame, *, mobile: bool = False) -> alt.Chart:
+    chart_width = 1200 if mobile else None
+    return (
+        alt.Chart(chart_df)
+        .mark_rect()
+        .encode(
+            x=alt.X("time:T", title="日時"),
+            y=alt.Y("model:N", title="モデル"),
+            color=alt.Color(
+                "雲量[%]:Q",
+                title="雲量 (%)",
+                scale=alt.Scale(domain=[0, 100], scheme="blues"),
+            ),
+            tooltip=[
+                alt.Tooltip("日時:T", title="日時"),
+                alt.Tooltip("モデル:N", title="モデル"),
+                alt.Tooltip("雲量[%]:Q", title="雲量 (%)"),
+            ],
+        )
+        .properties(height=200 if mobile else 220, width=chart_width)
+    )
+
+
+def render_responsive_chart(chart: alt.Chart, *, mobile: bool = False) -> None:
+    """Altair チャートを端末に応じたラッパーで表示."""
+    if mobile:
+        st.markdown(
+            "<div style='overflow-x:auto; padding-bottom:8px;'>",
+            unsafe_allow_html=True,
+        )
+        st.altair_chart(chart, use_container_width=False)
+        st.markdown("</div>", unsafe_allow_html=True)
+    else:
+        st.altair_chart(chart, use_container_width=True)
 
 def update_selected_location(lat: float, lon: float) -> None:
     st.session_state.selected_location = {"lat": lat, "lon": lon}
@@ -321,7 +358,9 @@ def main() -> None:
     if chart_df.empty:
         st.info("各モデルで有効な雲量データを取得できませんでした。")
     else:
-        st.altair_chart(build_line_chart(chart_df, mobile=mobile_mode), use_container_width=True)
+        render_responsive_chart(build_line_chart(chart_df, mobile=mobile_mode), mobile=mobile_mode)
+        st.subheader("モデル別ヒートマップ")
+        render_responsive_chart(build_heatmap(chart_df, mobile=mobile_mode), mobile=mobile_mode)
 
     st.subheader("詳細データ")
     st.dataframe(ts_df, use_container_width=True, height=360)
