@@ -89,7 +89,6 @@ def build_line_chart(chart_df: pd.DataFrame, *, mobile: bool = False) -> alt.Cha
             {"year": ts.year, "month": ts.month, "date": ts.day, "hours": ts.hour, "minutes": ts.minute}
             for ts in hourly
         ]
-    chart_width = 1200 if mobile else None
     return (
         alt.Chart(chart_df)
         .mark_line(point=True)
@@ -123,13 +122,12 @@ def build_line_chart(chart_df: pd.DataFrame, *, mobile: bool = False) -> alt.Cha
                 alt.Tooltip("cloud_cover:Q", title="雲量 (%)"),
             ],
         )
-        .properties(height=340 if mobile else 360, width=chart_width)
+        .properties(height=340 if mobile else 360, width=1200 if mobile else 0)
         .configure_mark(strokeWidth=3)
     )
 
 
 def build_heatmap(chart_df: pd.DataFrame, *, mobile: bool = False) -> alt.Chart:
-    chart_width = 1200 if mobile else None
     return (
         alt.Chart(chart_df)
         .mark_rect()
@@ -147,7 +145,7 @@ def build_heatmap(chart_df: pd.DataFrame, *, mobile: bool = False) -> alt.Chart:
                 alt.Tooltip("雲量[%]:Q", title="雲量 (%)"),
             ],
         )
-        .properties(height=200 if mobile else 220, width=chart_width)
+        .properties(height=200 if mobile else 220, width=1200 if mobile else 0)
     )
 
 
@@ -359,8 +357,6 @@ def main() -> None:
         st.info("各モデルで有効な雲量データを取得できませんでした。")
     else:
         render_responsive_chart(build_line_chart(chart_df, mobile=mobile_mode), mobile=mobile_mode)
-        st.subheader("モデル別ヒートマップ")
-        render_responsive_chart(build_heatmap(chart_df, mobile=mobile_mode), mobile=mobile_mode)
 
     st.subheader("詳細データ")
     st.dataframe(ts_df, use_container_width=True, height=360)
