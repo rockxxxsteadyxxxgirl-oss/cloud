@@ -202,8 +202,10 @@ def build_line_chart(chart_df: pd.DataFrame, *, mobile: bool = False) -> alt.Cha
         ]
     # ベースより 1.5 倍大きく描画
     height = int(360 * 1.5) if not mobile else int(320 * 1.5)
-    # 横幅は元の約2倍相当（横200%）に拡大し、コンテナ内でスクロールさせる
-    width = 2400 if mobile else 1800
+    # 横幅はコンテナ内でスクロールさせる前提で拡大（ページ全体ははみ出させない）
+    width = 1800 if mobile else 1400
+    # X軸のみズーム・パンを許可（Y軸は 0-100 に固定）
+    x_zoom = alt.selection_interval(bind="scales", encodings=["x"])
     return (
         alt.Chart(chart_df)
         .mark_line(point=True)
@@ -221,7 +223,11 @@ def build_line_chart(chart_df: pd.DataFrame, *, mobile: bool = False) -> alt.Cha
                     titleFontSize=12 if mobile else 14,
                 ),
             ),
-            y=alt.Y("cloud_cover:Q", title="雲量 (%)", scale=alt.Scale(domain=[0, 100], clamp=True)),
+            y=alt.Y(
+                "cloud_cover:Q",
+                title="雲量 (%)",
+                scale=alt.Scale(domain=[0, 100], clamp=True, nice=False),
+            ),
             color=alt.Color(
                 "model:N",
                 title="モデル",
@@ -241,13 +247,15 @@ def build_line_chart(chart_df: pd.DataFrame, *, mobile: bool = False) -> alt.Cha
         .configure_mark(strokeWidth=3)
         .configure_view(strokeWidth=0, continuousWidth=width, continuousHeight=height)
         .configure(padding={"top": 0, "left": 0, "right": 0, "bottom": 0})
+        .add_selection(x_zoom)
     )
 
 
 def render_responsive_chart(chart: alt.Chart, *, mobile: bool = False) -> None:
     """スクロール可能な枠内にチャートを収め、詳細データと似た見た目にする。"""
     container_style = (
-        "overflow:auto; max-height:720px; padding:0 8px 8px 8px; margin:0;"
+        "width:100%; max-width:100%; overflow:auto; max-height:720px;"
+        "padding:0 8px 8px 8px; margin:0;"
         "border:1px solid #dfe3eb; border-radius:8px; background:#ffffff;"
         "box-shadow: 0 1px 3px rgba(0,0,0,0.04);"
     )
