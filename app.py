@@ -196,6 +196,7 @@ def build_line_chart(chart_df: pd.DataFrame, *, mobile: bool = False) -> alt.Cha
     if not chart_df.empty:
         start = chart_df["time"].min().floor("H")
         end = chart_df["time"].max().ceil("H")
+        # 1 時間刻みで固定
         hourly = pd.date_range(start, end, freq="1H")
         axis_values = [
             {"year": ts.year, "month": ts.month, "date": ts.day, "hours": ts.hour, "minutes": ts.minute}
@@ -203,7 +204,7 @@ def build_line_chart(chart_df: pd.DataFrame, *, mobile: bool = False) -> alt.Cha
         ]
     # 横幅 150%（高さも広めを維持）
     height = int(360 * 2)
-    width = int(1200 * 1.5)
+    width = int(1200 * 1.8)
     # X軸のみドラッグ操作で拡大・パン（ホイール/ピンチズームは無効にしてスクロール時の再描画を防ぐ）
     x_zoom = alt.selection_interval(bind="scales", encodings=["x"], zoom=False)
     return (
