@@ -11,6 +11,7 @@ import folium
 import pandas as pd
 import requests
 import streamlit as st
+import streamlit.components.v1 as components
 from geopy.geocoders import Nominatim
 from streamlit_folium import st_folium
 from textwrap import wrap
@@ -310,6 +311,47 @@ def init_session_state() -> None:
             st.session_state[key] = val
 
 
+def get_query_params() -> Dict[str, str]:
+    """Streamlit バージョン差分を吸収して query params を取得."""
+    if hasattr(st, "query_params"):
+        return st.query_params
+    return st.experimental_get_query_params()
+
+
+def clear_query_params() -> None:
+    """query params をクリア."""
+    if hasattr(st, "query_params"):
+        st.query_params.clear()
+    else:
+        st.experimental_set_query_params()
+
+
+def render_gps_button() -> None:
+    """ブラウザの geolocation API を使うボタン（HTTPS または localhost 必須）。"""
+    components.html(
+        """
+        <div style="margin-top:8px;">
+          <button onclick="navigator.geolocation.getCurrentPosition(
+              pos => {
+                const lat = pos.coords.latitude.toFixed(6);
+                const lon = pos.coords.longitude.toFixed(6);
+                const url = new URL(window.location.href);
+                url.searchParams.set('geo_lat', lat);
+                url.searchParams.set('geo_lon', lon);
+                window.location.href = url.toString();
+              },
+              err => { alert('位置情報を取得できません: ' + err.message + '\\n(HTTPSまたはlocalhostが必要です)'); },
+              {enableHighAccuracy:true, timeout:10000}
+          );"
+          style="width:100%;padding:8px;background:#0068c9;color:white;border:none;border-radius:4px;cursor:pointer;">
+          ブラウザ位置情報(GPS)を使用
+          </button>
+        </div>
+        """,
+        height=60,
+    )
+
+
 def main() -> None:
     st.set_page_config(page_title="雲量比較ダッシュボード", layout="wide")
     st.title("雲量比較ダッシュボード")
@@ -318,52 +360,23 @@ def main() -> None:
     init_session_state()
 
     # クエリパラメータに geo_lat/geo_lon があれば 1 回だけ反映してクリア
-    qp = st.query_params
-    if not st.session_state.geo_applied and "geo_lat" in qp and "geo_lon" in qp:
+    qp = get_query_params()
+    if not st.session_state.geo_applied and qp.get("geo_lat") and qp.get("geo_lon"):
         try:
             lat_q = float(qp.get("geo_lat"))
             lon_q = float(qp.get("geo_lon"))
             update_selected_location(lat_q, lon_q)
             st.session_state.geo_applied = True
             st.success(f"ブラウザ位置情報を反映しました: {lat_q:.4f}, {lon_q:.4f}")
-            st.query_params.clear()
+            clear_query_params()
             st.rerun()
         except Exception:
-            pass
+            clear_query_params()
 
     with st.sidebar:
         mobile_mode = st.checkbox("モバイル表示モード", value=False, help="スマホ等で見やすい横スクロール表示に切り替え")
         if mobile_mode:
-            if st.button("現在地（IP推定）を取得", help="ブラウザの位置情報は使わずIPベースの概略位置を使用します。"):
-                loc = fetch_ip_location()
-                if loc:
-                    update_selected_location(loc[0], loc[1])
-                    st.success(f"推定した現在地を設定しました: {loc[0]:.4f}, {loc[1]:.4f}")
-                    st.rerun()
-                else:
-                    st.error("現在地を取得できませんでした。通信環境をご確認ください。")
-            st.markdown(
-                """
-                <div style="margin-top:8px;">
-                  <button onclick="navigator.geolocation.getCurrentPosition(
-                      pos => {
-                        const lat = pos.coords.latitude.toFixed(6);
-                        const lon = pos.coords.longitude.toFixed(6);
-                        const url = new URL(window.location.href);
-                        url.searchParams.set('geo_lat', lat);
-                        url.searchParams.set('geo_lon', lon);
-                        window.location.href = url.toString();
-                      },
-                      err => { alert('位置情報を取得できません: ' + err.message); },
-                      {enableHighAccuracy:true, timeout:10000}
-                  );"
-                  style="width:100%;padding:8px;background:#0068c9;color:white;border:none;border-radius:4px;cursor:pointer;">
-                  ブラウザ位置情報(GPS)を使用
-                  </button>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
+            render_gps_button()
 
     current_lat = st.session_state.selected_location["lat"]
     current_lon = st.session_state.selected_location["lon"]
