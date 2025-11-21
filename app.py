@@ -295,7 +295,7 @@ def init_session_state() -> None:
         "saved_select": "",
         "geo_applied": False,
         "map_center": {"lat": 38.1363, "lon": 140.4495},
-        "map_zoom": 8,
+        "map_zoom": 10,
     }
     for key, val in defaults.items():
         if key not in st.session_state:
@@ -401,7 +401,7 @@ def main() -> None:
                     st.info(f"クリックした地点: {lat_click:.4f}, {lon_click:.4f}")
                     update_selected_location(lat_click, lon_click)
                     st.session_state.map_center = {"lat": lat_click, "lon": lon_click}
-                    # ズームレベルは変更しない
+                    st.session_state.map_zoom = 13
                     st.rerun()
         st.caption(f"現在の座標: {st.session_state.selected_location['lat']:.4f}, "
                    f"{st.session_state.selected_location['lon']:.4f}")
