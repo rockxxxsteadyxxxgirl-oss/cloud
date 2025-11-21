@@ -201,11 +201,11 @@ def build_line_chart(chart_df: pd.DataFrame, *, mobile: bool = False) -> alt.Cha
             {"year": ts.year, "month": ts.month, "date": ts.day, "hours": ts.hour, "minutes": ts.minute}
             for ts in hourly
         ]
-    # ベース比 200% のサイズに拡大（スクロールはコンテナ側で実施）
+    # 横幅 150%（高さも広めを維持）
     height = int(360 * 2)
-    width = 1800
-    # X軸のみズーム・パンを許可（Y軸は 0-100 に固定）
-    x_zoom = alt.selection_interval(bind="scales", encodings=["x"])
+    width = int(1200 * 1.5)
+    # X軸のみドラッグ操作で拡大・パン（ホイール/ピンチズームは無効にしてスクロール時の再描画を防ぐ）
+    x_zoom = alt.selection_interval(bind="scales", encodings=["x"], zoom=False)
     return (
         alt.Chart(chart_df)
         .mark_line(point=True)
