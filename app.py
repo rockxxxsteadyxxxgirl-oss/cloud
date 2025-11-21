@@ -201,10 +201,9 @@ def build_line_chart(chart_df: pd.DataFrame, *, mobile: bool = False) -> alt.Cha
             {"year": ts.year, "month": ts.month, "date": ts.day, "hours": ts.hour, "minutes": ts.minute}
             for ts in hourly
         ]
-    # ベースより 1.5 倍大きく描画
-    height = int(360 * 1.5) if not mobile else int(320 * 1.5)
-    # 横幅はコンテナ内でスクロールさせる前提で拡大（ページ全体ははみ出させない）
-    width = 1800 if mobile else 1400
+    # スマホでも崩れにくいサイズに調整（スクロールはコンテナ側で実施）
+    height = int(360 * 1.2)
+    width = 900
     # X軸のみズーム・パンを許可（Y軸は 0-100 に固定）
     x_zoom = alt.selection_interval(bind="scales", encodings=["x"])
     return (
