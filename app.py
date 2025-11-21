@@ -201,9 +201,9 @@ def build_line_chart(chart_df: pd.DataFrame, *, mobile: bool = False) -> alt.Cha
             {"year": ts.year, "month": ts.month, "date": ts.day, "hours": ts.hour, "minutes": ts.minute}
             for ts in hourly
         ]
-    # スマホでも崩れにくいサイズに調整（スクロールはコンテナ側で実施）
-    height = int(360 * 1.2)
-    width = 900
+    # ベース比 200% のサイズに拡大（スクロールはコンテナ側で実施）
+    height = int(360 * 2)
+    width = 1800
     # X軸のみズーム・パンを許可（Y軸は 0-100 に固定）
     x_zoom = alt.selection_interval(bind="scales", encodings=["x"])
     return (
@@ -415,7 +415,7 @@ def main() -> None:
         ).add_to(map_fig)
         map_state = st_folium(
             map_fig,
-            width=None if mobile_mode else 1100,
+            width=None if mobile_mode else 825,
             height=420 if mobile_mode else 540,
             key="forecast_map",
             returned_objects=["last_clicked"],
