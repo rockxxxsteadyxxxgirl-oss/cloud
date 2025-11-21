@@ -388,9 +388,7 @@ def main() -> None:
         st.rerun()
 
     with st.sidebar:
-        mobile_mode = st.checkbox("モバイル表示モード", value=False, help="スマホ等で見やすい横スクロール表示に切り替え")
-        if mobile_mode:
-            render_gps_button()
+        mobile_mode = False  # モバイル表示モードを非表示・無効化
 
     current_lat = st.session_state.selected_location["lat"]
     current_lon = st.session_state.selected_location["lon"]
