@@ -318,6 +318,23 @@ def get_query_params() -> Dict[str, str]:
     return st.experimental_get_query_params()
 
 
+def parse_geo_params(qp: Dict[str, str]) -> Optional[tuple[float, float]]:
+    """geo_lat/geo_lon を dict または QueryParams から安全に取り出し float に変換."""
+    def first(val):
+        if isinstance(val, list):
+            return val[0] if val else None
+        return val
+
+    lat_raw = first(qp.get("geo_lat"))
+    lon_raw = first(qp.get("geo_lon"))
+    if lat_raw is None or lon_raw is None:
+        return None
+    try:
+        return float(lat_raw), float(lon_raw)
+    except (TypeError, ValueError):
+        return None
+
+
 def clear_query_params() -> None:
     """query params をクリア."""
     if hasattr(st, "query_params"):
@@ -361,17 +378,14 @@ def main() -> None:
 
     # クエリパラメータに geo_lat/geo_lon があれば 1 回だけ反映してクリア
     qp = get_query_params()
-    if not st.session_state.geo_applied and qp.get("geo_lat") and qp.get("geo_lon"):
-        try:
-            lat_q = float(qp.get("geo_lat"))
-            lon_q = float(qp.get("geo_lon"))
-            update_selected_location(lat_q, lon_q)
-            st.session_state.geo_applied = True
-            st.success(f"ブラウザ位置情報を反映しました: {lat_q:.4f}, {lon_q:.4f}")
-            clear_query_params()
-            st.rerun()
-        except Exception:
-            clear_query_params()
+    geo = parse_geo_params(qp)
+    if not st.session_state.geo_applied and geo:
+        lat_q, lon_q = geo
+        update_selected_location(lat_q, lon_q)
+        st.session_state.geo_applied = True
+        st.success(f"ブラウザ位置情報を反映しました: {lat_q:.4f}, {lon_q:.4f}")
+        clear_query_params()
+        st.rerun()
 
     with st.sidebar:
         mobile_mode = st.checkbox("モバイル表示モード", value=False, help="スマホ等で見やすい横スクロール表示に切り替え")
