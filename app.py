@@ -1,96 +1,38 @@
-"""Open-Meteo から複数モデルの雲量を取得して比較する Streamlit アプリ."""
+#!/usr/bin/env python
+"""
+Open-Meteo の複数モデルで雲量を比較するシンプルな Streamlit アプリ。
 
+実行例:
+    streamlit run streamlit_app.py
+"""
 from __future__ import annotations
 
-import math
+import json
 from datetime import timedelta
-from typing import Dict, List, Optional
+from pathlib import Path
+from typing import Dict, List, Optional, Tuple
 
 import altair as alt
 import folium
 import pandas as pd
 import requests
 import streamlit as st
-import streamlit.components.v1 as components
 from geopy.geocoders import Nominatim
 from streamlit_folium import st_folium
-from textwrap import wrap
-
-# openmeteo_requests が入っていれば利用し、無ければ requests フォールバック
-try:
-    import openmeteo_requests
-    import requests_cache
-    from retry_requests import retry
-except ImportError:  # pragma: no cover - ライブラリ無い場合のフォールバック
-    openmeteo_requests = None
 
 API_URL = "https://api.open-meteo.com/v1/forecast"
 
-# モデル一覧
 MODEL_INFOS: List[Dict[str, str]] = [
-    {
-        "display_name": "ECMWF IFS 0.25°",
-        "code": "ecmwf_ifs025",
-        "desc": "ECMWF の全球モデル。0.25°グリッドで広域の雲量傾向を把握。",
-    },
-    {
-        "display_name": "ECMWF IFS (デフォルト)",
-        "code": "ecmwf_ifs",
-        "desc": "ECMWF のデフォルト解像度版。0.25°との違いを比較できます。",
-    },
-    {
-        "display_name": "NOAA GFS 0.25°",
-        "code": "gfs_seamless",
-        "desc": "米国 NOAA の全球予報システム。広域の雲量・風をカバー。",
-    },
-    {
-        "display_name": "ICON Global 0.25°",
-        "code": "icon_global",
-        "desc": "ドイツ気象庁（DWD）の ICON グローバルモデル。",
-    },
-    {
-        "display_name": "Météo-France Seamless",
-        "code": "meteofrance_seamless",
-        "desc": "フランス気象局のシームレス予報モデル。欧州域の比較用。",
-    },
-    {
-        "display_name": "UKMO Seamless",
-        "code": "ukmo_seamless",
-        "desc": "英国気象庁(UKMO)のシームレス予報モデル。英国・欧州の比較用。",
-    },
-    {
-        "display_name": "JMA Seamless",
-        "code": "jma_seamless",
-        "desc": "気象庁のシームレス予報モデル。日本域細網での比較用。",
-    },
-    {
-        "display_name": "JMA GSM 20km",
-        "code": "jma_gsm",
-        "desc": "気象庁 GSM。約20km メッシュで数日先の傾向把握に。",
-    },
-    {
-        "display_name": "JMA MSM 5km",
-        "code": "jma_msm",
-        "desc": "気象庁 MSM。5km メッシュで日本域の短期予測に強み。",
-    },
+    {"display_name": "ECMWF IFS 0.25°", "code": "ecmwf_ifs025"},
+    {"display_name": "ECMWF IFS", "code": "ecmwf_ifs"},
+    {"display_name": "NOAA GFS 0.25°", "code": "gfs_seamless"},
+    {"display_name": "ICON Global 0.25°", "code": "icon_global"},
+    {"display_name": "Météo-France Seamless", "code": "meteofrance_seamless"},
+    {"display_name": "UKMO Seamless", "code": "ukmo_seamless"},
+    {"display_name": "JMA Seamless", "code": "jma_seamless"},
+    {"display_name": "JMA GSM 20km", "code": "jma_gsm"},
+    {"display_name": "JMA MSM 5km", "code": "jma_msm"},
 ]
-
-FORECAST_MODELS = {m["display_name"]: m["code"] for m in MODEL_INFOS}
-
-
-_OM_CLIENT: Optional["openmeteo_requests.Client"] = None
-
-
-def get_openmeteo_client() -> Optional["openmeteo_requests.Client"]:
-    """openmeteo_requests が入っていればキャッシュ＋リトライ付きクライアントを返す。"""
-    global _OM_CLIENT  # noqa: PLW0603
-    if openmeteo_requests is None:
-        return None
-    if _OM_CLIENT is None:
-        cache_session = requests_cache.CachedSession(".cache", expire_after=3600)
-        retry_session = retry(cache_session, retries=5, backoff_factor=0.2)
-        _OM_CLIENT = openmeteo_requests.Client(session=retry_session)
-    return _OM_CLIENT
 
 
 def round_coord(value: float) -> float:
@@ -98,57 +40,31 @@ def round_coord(value: float) -> float:
 
 
 @st.cache_data(ttl=1800, show_spinner=False)
-def fetch_forecast(lat: float, lon: float, model: str) -> pd.DataFrame:
-    """総雲量を取得（cloudcover に加え層別雲量で補完）。"""
-    client = get_openmeteo_client()
+def fetch_forecast(lat: float, lon: float, model: str) -> Tuple[pd.DataFrame, str]:
+    """総雲量を取得。cloudcover が 0/1 だけなら層別雲量で補完し百分率化。"""
+    params = {
+        "latitude": round_coord(lat),
+        "longitude": round_coord(lon),
+        "hourly": "cloudcover,cloudcover_low,cloudcover_mid,cloudcover_high",
+        "forecast_days": 7,
+        "timezone": "auto",
+        "models": model,
+    }
+    resp = requests.get(API_URL, params=params, timeout=20)
+    resp.raise_for_status()
+    payload = resp.json()
 
-    if client is not None:
-        params = {
-            "latitude": round_coord(lat),
-            "longitude": round_coord(lon),
-            "hourly": "cloud_cover,cloud_cover_low,cloud_cover_mid,cloud_cover_high",
-            "forecast_days": 7,
-            "timezone": "auto",
-            "models": model,
-        }
-        responses = client.weather_api(API_URL, params=params)
-        if not responses:
-            raise ValueError("Open-Meteo API から雲量データを取得できませんでした。")
-        resp = responses[0]
-        hourly = resp.Hourly()
-        times = pd.date_range(
-            start=pd.to_datetime(hourly.Time(), unit="s", utc=True),
-            end=pd.to_datetime(hourly.TimeEnd(), unit="s", utc=True),
-            freq=pd.Timedelta(seconds=hourly.Interval()),
-            inclusive="left",
-        ).tz_localize(None)
-        total = pd.Series(hourly.Variables(0).ValuesAsNumpy())
-        low = pd.Series(hourly.Variables(1).ValuesAsNumpy())
-        mid = pd.Series(hourly.Variables(2).ValuesAsNumpy())
-        high = pd.Series(hourly.Variables(3).ValuesAsNumpy())
-        timezone = resp.Timezone()
-    else:
-        params = {
-            "latitude": round_coord(lat),
-            "longitude": round_coord(lon),
-            "hourly": "cloudcover,cloudcover_low,cloudcover_mid,cloudcover_high",
-            "forecast_days": 7,
-            "timezone": "auto",
-            "models": model,
-        }
-        resp = requests.get(API_URL, params=params, timeout=20)
-        resp.raise_for_status()
-        payload = resp.json()
-        hourly = payload.get("hourly") or {}
-        times = hourly.get("time")
-        if not times:
-            raise ValueError("Open-Meteo API から雲量データを取得できませんでした。")
-        timezone = payload.get("timezone", "UTC")
-        times = pd.to_datetime(times)
-        total = pd.to_numeric(pd.Series(hourly.get("cloudcover")), errors="coerce")
-        low = pd.to_numeric(pd.Series(hourly.get("cloudcover_low")), errors="coerce")
-        mid = pd.to_numeric(pd.Series(hourly.get("cloudcover_mid")), errors="coerce")
-        high = pd.to_numeric(pd.Series(hourly.get("cloudcover_high")), errors="coerce")
+    hourly = payload.get("hourly") or {}
+    times = hourly.get("time")
+    if not times:
+        raise ValueError("Open-Meteo から雲量データを取得できませんでした。")
+    timezone = payload.get("timezone", "UTC")
+    times = pd.to_datetime(times)
+
+    total = pd.to_numeric(pd.Series(hourly.get("cloudcover")), errors="coerce")
+    low = pd.to_numeric(pd.Series(hourly.get("cloudcover_low")), errors="coerce")
+    mid = pd.to_numeric(pd.Series(hourly.get("cloudcover_mid")), errors="coerce")
+    high = pd.to_numeric(pd.Series(hourly.get("cloudcover_high")), errors="coerce")
 
     has_layer_data = not (
         low.empty or mid.empty or high.empty or low.isna().all() or mid.isna().all() or high.isna().all()
@@ -158,84 +74,78 @@ def fetch_forecast(lat: float, lon: float, model: str) -> pd.DataFrame:
     max_val = candidate.max(skipna=True)
     has_fraction = ((candidate % 1) != 0).any()
 
-    # cloudcover が欠落/二値のみなら層別の最大を総雲量に使用
     if (candidate.isna().all() or (max_val is not None and max_val <= 1 and not has_fraction)) and has_layer_data:
         candidate = pd.concat([low, mid, high], axis=1).max(axis=1)
         max_val = candidate.max(skipna=True)
         has_fraction = ((candidate % 1) != 0).any()
 
-    # 0〜1 の実数を含む場合だけ百分率化
     if max_val is not None and max_val <= 1 and has_fraction:
         candidate = candidate * 100
 
-    df = pd.DataFrame({"time": times, "cloud_cover": candidate, "timezone": timezone})
-    return df
+    df = pd.DataFrame({"time": times, "cloud_cover": candidate})
+    return df, timezone
 
 
 def filter_next_hours(df: pd.DataFrame, hours: int = 48) -> pd.DataFrame:
     if df.empty:
         return df
-    tzinfo = df["time"].dt.tz
-    now = pd.Timestamp.now(tz=tzinfo)
+    now = pd.Timestamp.now(tz=df["time"].dt.tz)
     cutoff = now + timedelta(hours=hours)
     filtered = df[(df["time"] >= now) & (df["time"] <= cutoff)].copy()
-    if tzinfo is not None:
-        filtered["time"] = filtered["time"].dt.tz_localize(None)
+    filtered["time"] = filtered["time"].dt.tz_localize(None)
     return filtered
 
 
 def prepare_chart_data(timeseries: pd.DataFrame) -> pd.DataFrame:
     chart_df = timeseries.melt("time", var_name="model", value_name="cloud_cover")
     chart_df["cloud_cover"] = pd.to_numeric(chart_df["cloud_cover"], errors="coerce")
-    chart_df = chart_df.dropna(subset=["cloud_cover"])
-    return chart_df
+    return chart_df.dropna(subset=["cloud_cover"])
 
 
-def build_line_chart(chart_df: pd.DataFrame, *, mobile: bool = False) -> alt.Chart:
+def prepare_layer_chart_data(df: pd.DataFrame) -> pd.DataFrame:
+    chart_df = df.melt("time", var_name="layer", value_name="cloud_cover")
+    chart_df["cloud_cover"] = pd.to_numeric(chart_df["cloud_cover"], errors="coerce")
+    return chart_df.dropna(subset=["cloud_cover"])
+
+
+def build_line_chart(chart_df: pd.DataFrame) -> alt.Chart:
     axis_values = None
     if not chart_df.empty:
         start = chart_df["time"].min().floor("H")
         end = chart_df["time"].max().ceil("H")
-        # 1 時間刻みで固定
-        hourly = pd.date_range(start, end, freq="1H")
-        axis_values = [
-            {"year": ts.year, "month": ts.month, "date": ts.day, "hours": ts.hour, "minutes": ts.minute}
-            for ts in hourly
-        ]
-    # 横幅 150%（高さも広めを維持）
-    height = int(360 * 2)
-    width = int(1200 * 1.8)
-    # X軸のみドラッグ操作で拡大・パン（ホイール/ピンチズームは無効にしてスクロール時の再描画を防ぐ）
-    x_zoom = alt.selection_interval(bind="scales", encodings=["x"], zoom=False)
+        axis_values = pd.date_range(start, end, freq="1H").to_pydatetime().tolist()
+
     return (
         alt.Chart(chart_df)
-        .mark_line(point=True)
+        .mark_line(point=False, strokeWidth=2.4)
         .encode(
             x=alt.X(
                 "time:T",
-                title="日時 (日付＋時刻)",
-                scale=alt.Scale(nice=False, clamp=True),
+                title="日時",
                 axis=alt.Axis(
                     format="%m/%d %H:%M",
+                    labelAngle=-45,
+                    labelFontSize=11,
+                    titleFontSize=12,
                     values=axis_values,
                     labelOverlap=False,
-                    labelAngle=-80 if mobile else -45,
-                    labelFontSize=9 if mobile else 12,
-                    titleFontSize=12 if mobile else 14,
                 ),
             ),
             y=alt.Y(
                 "cloud_cover:Q",
                 title="雲量 (%)",
-                scale=alt.Scale(domain=[0, 100], clamp=True, nice=False),
+                scale=alt.Scale(domain=[0, 100], clamp=True),
+                axis=alt.Axis(labelFontSize=11, titleFontSize=12, grid=True),
             ),
             color=alt.Color(
                 "model:N",
                 title="モデル",
                 legend=alt.Legend(
                     orient="bottom",
-                    columns=2 if mobile else 3,
-                    labelFontSize=10 if mobile else 12,
+                    direction="horizontal",
+                    columns=len(MODEL_INFOS),  # 1行に並べる
+                    labelFontSize=11,
+                    titleFontSize=12,
                 ),
             ),
             tooltip=[
@@ -244,335 +154,489 @@ def build_line_chart(chart_df: pd.DataFrame, *, mobile: bool = False) -> alt.Cha
                 alt.Tooltip("cloud_cover:Q", title="雲量 (%)"),
             ],
         )
-        .properties(height=height, width=width)
-        .configure_mark(strokeWidth=3)
-        .configure_view(strokeWidth=0, continuousWidth=width, continuousHeight=height)
-        .configure(padding={"top": 0, "left": 0, "right": 0, "bottom": 0})
-        .add_selection(x_zoom)
+        .properties(height=640, width=2400)
+        .configure_view(strokeWidth=0)
     )
 
 
-def render_responsive_chart(chart: alt.Chart, *, mobile: bool = False) -> None:
-    """スクロール可能な枠内にチャートを収め、詳細データと似た見た目にする。"""
-    container_style = (
-        "width:100%; max-width:100%; overflow:auto; max-height:720px;"
-        "padding:0 8px 8px 8px; margin:0;"
-        "border:1px solid #dfe3eb; border-radius:8px; background:#ffffff;"
-        "box-shadow: 0 1px 3px rgba(0,0,0,0.04);"
+def build_layer_chart(chart_df: pd.DataFrame, title_suffix: str) -> alt.Chart:
+    axis_values = None
+    if not chart_df.empty:
+        start = chart_df["time"].min().floor("H")
+        end = chart_df["time"].max().ceil("H")
+        axis_values = pd.date_range(start, end, freq="1H").to_pydatetime().tolist()
+
+    return (
+        alt.Chart(chart_df)
+        .mark_line(point=False, strokeWidth=2.4)
+        .encode(
+            x=alt.X(
+                "time:T",
+                title=f"日時 ({title_suffix})",
+                axis=alt.Axis(
+                    format="%m/%d %H:%M",
+                    labelAngle=-45,
+                    labelFontSize=11,
+                    titleFontSize=12,
+                    values=axis_values,
+                    labelOverlap=False,
+                ),
+            ),
+            y=alt.Y(
+                "cloud_cover:Q",
+                title="雲量 (%)",
+                scale=alt.Scale(domain=[0, 100], clamp=True),
+                axis=alt.Axis(labelFontSize=11, titleFontSize=12, grid=True),
+            ),
+            color=alt.Color(
+                "layer:N",
+                title="雲の層",
+                legend=alt.Legend(
+                    orient="bottom",
+                    direction="horizontal",
+                    columns=4,
+                    labelFontSize=11,
+                    titleFontSize=12,
+                ),
+                scale=alt.Scale(
+                    domain=["総雲量", "下層雲", "中層雲", "上層雲"],
+                    range=["#1f78b4", "#33a02c", "#fb9a99", "#6a3d9a"],
+                ),
+            ),
+            tooltip=[
+                alt.Tooltip("time:T", title="日時"),
+                alt.Tooltip("layer:N", title="層"),
+                alt.Tooltip("cloud_cover:Q", title="雲量 (%)"),
+            ],
+        )
+        .properties(height=480, width=2000)
+        .configure_view(strokeWidth=0)
     )
-    st.markdown(f"<div style='{container_style}'>", unsafe_allow_html=True)
-    st.altair_chart(chart, use_container_width=False)
-    st.markdown("</div>", unsafe_allow_html=True)
 
 
-def update_selected_location(lat: float, lon: float) -> None:
-    st.session_state.selected_location = {"lat": lat, "lon": lon}
-    st.session_state.lat_input = lat
-    st.session_state.lon_input = lon
-    st.session_state.pop("latest_data", None)
+def geocode_place(query: str) -> Optional[Tuple[float, float, Optional[str]]]:
+    if not query.strip():
+        return None
     try:
-        geocoder = Nominatim(user_agent="cloud_cover_app", timeout=5)
-        location = geocoder.reverse((lat, lon), language="ja")
-        st.session_state.selected_place_name = location.address if location else "地名を取得できませんでした"
-    except Exception:  # pragma: no cover - ネットワーク例外
-        st.session_state.selected_place_name = "地名を取得できませんでした"
-
-
-def fetch_ip_location() -> Optional[tuple[float, float]]:
-    """IP ベースで概略の現在地を取得（モバイル向けの簡易ボタン用）。"""
-    try:
-        resp = requests.get("https://ipapi.co/json/", timeout=8)
-        resp.raise_for_status()
-        data = resp.json()
-        lat = data.get("latitude")
-        lon = data.get("longitude")
-        if lat is None or lon is None:
+        geocoder = Nominatim(user_agent="cloud_cover_simple_app", timeout=5)
+        result = geocoder.geocode(query)
+        if result is None:
             return None
-        return float(lat), float(lon)
-    except Exception:  # pragma: no cover - ネットワーク例外
+        return float(result.latitude), float(result.longitude), result.address
+    except Exception:
         return None
 
 
-def init_session_state() -> None:
+def reverse_geocode(lat: float, lon: float) -> Optional[str]:
+    try:
+        geocoder = Nominatim(user_agent="cloud_cover_simple_app", timeout=5)
+        result = geocoder.reverse((lat, lon), language="ja")
+        if result is None:
+            return None
+        return result.address
+    except Exception:
+        return None
+
+
+def load_models(lat: float, lon: float) -> Tuple[pd.DataFrame, List[Dict[str, str]]]:
+    frames: List[pd.DataFrame] = []
+    metadata: List[Dict[str, str]] = []
+    for info in MODEL_INFOS:
+        display_name, model_code = info["display_name"], info["code"]
+        total_label = f"{display_name} (Total cloud)"
+        df, tz = fetch_forecast(lat, lon, model_code)
+        df = filter_next_hours(df)
+        renamed = df.rename(columns={"cloud_cover": total_label})
+        frames.append(renamed[["time", total_label]])
+        metadata.append({"モデル": total_label, "データ件数": len(df), "タイムゾーン": tz})
+
+    merged = frames[0]
+    for frame in frames[1:]:
+        merged = merged.merge(frame, on="time", how="outer")
+    merged = merged.sort_values("time").reset_index(drop=True)
+    return merged, metadata
+
+
+def normalize_cloud(series: pd.Series) -> pd.Series:
+    series = pd.to_numeric(series, errors="coerce")
+    max_val = series.max(skipna=True)
+    has_fraction = ((series % 1) != 0).any()
+    if max_val is not None and max_val <= 1 and has_fraction:
+        series = series * 100
+    return series
+
+
+def fetch_layered_forecast(lat: float, lon: float, model: str) -> pd.DataFrame:
+    params = {
+        "latitude": round_coord(lat),
+        "longitude": round_coord(lon),
+        "hourly": "cloudcover,cloudcover_low,cloudcover_mid,cloudcover_high",
+        "forecast_days": 7,
+        "timezone": "auto",
+        "models": model,
+    }
+    resp = requests.get(API_URL, params=params, timeout=20)
+    resp.raise_for_status()
+    payload = resp.json()
+
+    hourly = payload.get("hourly") or {}
+    times = hourly.get("time")
+    if not times:
+        raise ValueError("Open-Meteo から雲量データを取得できませんでした。")
+    times = pd.to_datetime(times)
+
+    total = normalize_cloud(pd.Series(hourly.get("cloudcover")))
+    low = normalize_cloud(pd.Series(hourly.get("cloudcover_low")))
+    mid = normalize_cloud(pd.Series(hourly.get("cloudcover_mid")))
+    high = normalize_cloud(pd.Series(hourly.get("cloudcover_high")))
+
+    has_layer_data = not (low.empty or mid.empty or high.empty or low.isna().all() or mid.isna().all() or high.isna().all())
+    max_val = total.max(skipna=True)
+    has_fraction = ((total % 1) != 0).any()
+    if (total.isna().all() or (max_val is not None and max_val <= 1 and not has_fraction)) and has_layer_data:
+        total = pd.concat([low, mid, high], axis=1).max(axis=1)
+        total = normalize_cloud(total)
+
+    df = pd.DataFrame(
+        {
+            "time": times,
+            "総雲量": total,
+            "下層雲": low,
+            "中層雲": mid,
+            "上層雲": high,
+        }
+    )
+    return filter_next_hours(df)
+
+
+CACHE_FILE = Path(".saved_locations.json")
+
+
+def load_saved_locations_from_disk() -> List[Dict[str, object]]:
+    if not CACHE_FILE.exists():
+        return []
+    try:
+        data = json.loads(CACHE_FILE.read_text(encoding="utf-8"))
+        return data if isinstance(data, list) else []
+    except Exception:
+        return []
+
+
+def save_saved_locations_to_disk(locations: List[Dict[str, object]]) -> None:
+    try:
+        CACHE_FILE.write_text(json.dumps(locations, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception:
+        pass
+
+
+def init_state() -> None:
     defaults = {
-        "selected_location": {"lat": 38.1363, "lon": 140.4495},
-        "selected_place_name": "未取得",
-        "lat_input": 38.1363,
-        "lon_input": 140.4495,
+        "lat": 35.6812,
+        "lon": 139.7671,
+        "data": None,
+        "metadata": None,
+        "last_click": None,
+        "place_name": "未取得",
+        "trigger_fetch": False,
         "saved_locations": [],
         "save_label": "",
-        "saved_select": "",
-        "geo_applied": False,
-        "map_center": {"lat": 38.1363, "lon": 140.4495},
-        "map_zoom": 10,
+        "selected_saved": "",
+        "layer_data": None,
+        "layer_model": "",
+        "model_diagnostics": [],
     }
     for key, val in defaults.items():
         if key not in st.session_state:
             st.session_state[key] = val
+    if not st.session_state.get("saved_locations"):
+        disk_locations = load_saved_locations_from_disk()
+        if disk_locations:
+            st.session_state.saved_locations = disk_locations
 
 
-def get_query_params() -> Dict[str, str]:
-    """Streamlit バージョン差分を吸収して query params を取得."""
-    if hasattr(st, "query_params"):
-        return st.query_params
-    return st.experimental_get_query_params()
+def render_saved_locations(saved: List[Dict[str, object]]) -> None:
+    if saved:
+        options = [f"{loc['name']} ({loc['lat']:.3f}, {loc['lon']:.3f})" for loc in saved]
+        choice = st.selectbox("登録済み地点", options=options, key="selected_saved")
 
+        if st.button("選択した地点を呼び出す"):
+            idx = options.index(choice)
+            target = saved[idx]
+            st.session_state.lat = target["lat"]
+            st.session_state.lon = target["lon"]
+            st.session_state.place_name = target.get("place_name") or target["name"]
+            st.session_state.last_click = (target["lat"], target["lon"])
+            st.session_state.trigger_fetch = True
+            st.success(f"{target['name']} を読み込みました。")
 
-def parse_geo_params(qp: Dict[str, str]) -> Optional[tuple[float, float]]:
-    """geo_lat/geo_lon を dict または QueryParams から安全に取り出し float に変換."""
-    def first(val):
-        if isinstance(val, list):
-            return val[0] if val else None
-        return val
-
-    lat_raw = first(qp.get("geo_lat"))
-    lon_raw = first(qp.get("geo_lon"))
-    if lat_raw is None or lon_raw is None:
-        return None
-    try:
-        return float(lat_raw), float(lon_raw)
-    except (TypeError, ValueError):
-        return None
-
-
-def clear_query_params() -> None:
-    """query params をクリア."""
-    if hasattr(st, "query_params"):
-        st.query_params.clear()
+        if st.button("選択した地点を削除する", type="secondary"):
+            idx = options.index(choice)
+            target = saved[idx]
+            st.session_state.saved_locations = [loc for i, loc in enumerate(saved) if i != idx]
+            save_saved_locations_to_disk(st.session_state.saved_locations)
+            st.success(f"{target['name']} を削除しました。")
+            st.rerun()
     else:
-        st.experimental_set_query_params()
+        st.info("登録済みの地点はまだありません。")
 
-
-def render_gps_button() -> None:
-    """ブラウザの geolocation API を使うボタン（HTTPS または localhost 必須）。"""
-    components.html(
-        """
-        <div style="margin-top:8px;">
-          <button onclick="navigator.geolocation.getCurrentPosition(
-              pos => {
-                const lat = pos.coords.latitude.toFixed(6);
-                const lon = pos.coords.longitude.toFixed(6);
-                const url = new URL(window.location.href);
-                url.searchParams.set('geo_lat', lat);
-                url.searchParams.set('geo_lon', lon);
-                window.location.href = url.toString();
-              },
-              err => { alert('位置情報を取得できません: ' + err.message + '\\n(HTTPSまたはlocalhostが必要です)'); },
-              {enableHighAccuracy:true, timeout:10000}
-          );"
-          style="width:100%;padding:8px;background:#0068c9;color:white;border:none;border-radius:4px;cursor:pointer;">
-          ブラウザ位置情報(GPS)を使用
-          </button>
-        </div>
-        """,
-        height=60,
+    st.markdown("**登録地点の一覧 / エクスポート**")
+    saved_df = pd.DataFrame(saved)[["name", "lat", "lon", "place_name"]] if saved else pd.DataFrame(
+        columns=["name", "lat", "lon", "place_name"]
     )
+    st.dataframe(saved_df.rename(columns={"name": "ラベル", "lat": "緯度", "lon": "経度", "place_name": "地名"}), height=240)
+    json_str = json.dumps(saved if saved else [], ensure_ascii=False, indent=2)
+    st.download_button(
+        "登録地点をJSON出力",
+        data=json_str.encode("utf-8"),
+        file_name="saved_locations.json",
+        mime="application/json",
+        disabled=not bool(saved),
+    )
+
+    st.markdown("**JSON インポート**")
+    uploaded = st.file_uploader("登録地点のJSONを読み込み", type=["json"])
+    if uploaded and st.button("JSONをインポート"):
+        try:
+            uploaded.seek(0)
+            imported = json.load(uploaded)
+            if not isinstance(imported, list):
+                raise ValueError("JSONは地点のリスト形式にしてください。")
+
+            cleaned: List[Dict[str, object]] = []
+            for item in imported:
+                if not isinstance(item, dict):
+                    continue
+                name = str(item.get("name") or item.get("label") or "").strip()
+                lat = item.get("lat")
+                lon = item.get("lon")
+                if not name or lat is None or lon is None:
+                    continue
+                place_name = str(item.get("place_name") or item.get("name") or name)
+                cleaned.append({"name": name, "lat": float(lat), "lon": float(lon), "place_name": place_name})
+
+            if not cleaned:
+                raise ValueError("有効な地点データが見つかりませんでした。")
+
+            merged = {loc["name"]: loc for loc in st.session_state.saved_locations}
+            for loc in cleaned:
+                merged[loc["name"]] = loc
+            merged_list = list(merged.values())
+            if len(merged_list) > 20:
+                merged_list = merged_list[-20:]
+            st.session_state.saved_locations = merged_list
+            save_saved_locations_to_disk(st.session_state.saved_locations)
+            st.success(f"JSONから {len(cleaned)} 件取り込みました。")
+            st.rerun()
+        except Exception as exc:  # noqa: BLE001
+            st.error(f"インポートに失敗しました: {exc}")
+
+
+def render_sidebar() -> None:
+    st.subheader("地点の指定")
+    query = st.text_input("地名/住所で検索（任意）", key="query_input", placeholder="例: 東京駅")
+    if st.button("地名から検索"):
+        result = geocode_place(query)
+        if result:
+            lat, lon, name = result
+            st.session_state.lat, st.session_state.lon = lat, lon
+            st.session_state.last_click = (lat, lon)
+            st.session_state.place_name = name or query
+            st.session_state.trigger_fetch = True
+            st.success(f"座標を更新: {lat:.4f}, {lon:.4f}")
+        else:
+            st.error("地名を特定できませんでした。")
+
+    st.session_state.lat = st.number_input(
+        "緯度", min_value=-90.0, max_value=90.0, value=float(st.session_state.lat), step=0.1
+    )
+    st.session_state.lon = st.number_input(
+        "経度", min_value=-180.0, max_value=180.0, value=float(st.session_state.lon), step=0.1
+    )
+    if st.button("この地点の雲量を取得", type="primary"):
+        st.session_state.trigger_fetch = True
+
+    st.markdown("---")
+    st.subheader("地点の登録・呼び出し")
+    st.text_input("登録名", key="save_label", placeholder="例: 自宅/職場/観測点")
+    if st.button("現在の地点を登録"):
+        label = st.session_state.save_label.strip() or f"地点 {len(st.session_state.saved_locations) + 1}"
+        saved = list(st.session_state.saved_locations)
+        replaced = False
+        for loc in saved:
+            if loc["name"] == label:
+                loc.update(
+                    {"lat": st.session_state.lat, "lon": st.session_state.lon, "place_name": st.session_state.place_name}
+                )
+                replaced = True
+                break
+        if not replaced:
+            if len(saved) >= 20:
+                saved.pop(0)
+            saved.append(
+                {
+                    "name": label,
+                    "lat": st.session_state.lat,
+                    "lon": st.session_state.lon,
+                    "place_name": st.session_state.place_name,
+                }
+            )
+        st.session_state.saved_locations = saved
+        save_saved_locations_to_disk(st.session_state.saved_locations)
+        st.success(f"「{label}」を保存しました。")
+
+    saved = st.session_state.saved_locations
+    render_saved_locations(saved)
 
 
 def main() -> None:
-    st.set_page_config(page_title="雲量比較ダッシュボード", layout="wide")
-    st.title("雲量比較ダッシュボード")
-    st.caption("Open-Meteo の各モデルで総雲量を比較します。")
+    st.set_page_config(page_title="雲量比較", layout="wide")
+    st.title("雲量比較")
+    st.caption("Open-Meteo の複数モデルで直近 48 時間の雲量を比較します。")
 
-    # 右上に使い方ポップアップ
-    _, help_col = st.columns([5, 1])
-    with help_col:
-        with st.popover("使い方（ヘルプ）"):
-            st.markdown(
-                """
-                - **地点選択**: 地図ピンをクリックで選択。クリック後はズーム13で中央に再表示、赤ピンが現在地。
-                - **データ更新**: 「雲量を再取得」ボタンで最新の48時間データを取得・更新。
-                - **モデル一覧**: ECMWF IFS(0.25/デフォルト), GFS, ICON, Météo-France, UKMO, JMAなどを比較。
-                - **地点登録**: 最大20件。ラベルを付けて登録・呼び出しで素早く再比較。上書きは同名ラベルで実施。
-                - **表データ**: 「詳細データ」は直近分を表で表示。枠内スクロールで全行閲覧可能。
-                """
-            )
-
-    init_session_state()
-
-    # クエリパラメータに geo_lat/geo_lon があれば 1 回だけ反映してクリア
-    qp = get_query_params()
-    geo = parse_geo_params(qp)
-    if not st.session_state.geo_applied and geo:
-        lat_q, lon_q = geo
-        update_selected_location(lat_q, lon_q)
-        st.session_state.geo_applied = True
-        st.success(f"ブラウザ位置情報を反映しました: {lat_q:.4f}, {lon_q:.4f}")
-        clear_query_params()
-        st.rerun()
+    init_state()
 
     with st.sidebar:
-        mobile_mode = False  # モバイル表示モードを非表示・無効化
+        render_sidebar()
 
-    current_lat = st.session_state.selected_location["lat"]
-    current_lon = st.session_state.selected_location["lon"]
+    tab_compare, tab_manage = st.tabs(["比較モード", "モデルの雲量グラフ"])
 
-    if mobile_mode:
-        map_container = st.container()
-        input_container = st.container()
-    else:
-        map_container, input_container = st.columns([5, 1])
-
-    with map_container:
-        st.subheader("地図から地点を選択")
-        st.write("マップをクリックすると選択中の座標が更新されます。")
-        # 前回の中心・ズームを維持
-        map_fig = folium.Map(
-            location=[st.session_state.map_center["lat"], st.session_state.map_center["lon"]],
-            zoom_start=st.session_state.map_zoom,
-            control_scale=True,
-        )
-        folium.LatLngPopup().add_to(map_fig)
+    with tab_compare:
+        st.subheader("地図で地点を選択")
+        selected_lat = st.session_state.lat
+        selected_lon = st.session_state.lon
+        map_fig = folium.Map(location=[selected_lat, selected_lon], zoom_start=13, control_scale=True)
         folium.Marker(
-            [current_lat, current_lon],
-            tooltip=f"選択中: {current_lat:.3f}, {current_lon:.3f}",
+            [selected_lat, selected_lon],
+            tooltip="選択中の地点",
+            popup=st.session_state.place_name,
             icon=folium.Icon(color="red", icon="map-marker"),
         ).add_to(map_fig)
-        map_state = st_folium(
-            map_fig,
-            width=None if mobile_mode else 825,
-            height=420 if mobile_mode else 540,
-            key="forecast_map",
-            returned_objects=["last_clicked"],
-        )
-        if map_state:
-            # 表示中の中心のみ保存（ズームは固定）
-            center = map_state.get("center")
-            if center:
-                st.session_state.map_center = {"lat": center.get("lat", current_lat), "lon": center.get("lng", current_lon)}
+        map_state = st_folium(map_fig, width=900, height=420, key="map", returned_objects=["last_clicked"])
 
-            if map_state.get("last_clicked"):
-                lat_click = map_state["last_clicked"].get("lat")
-                lon_click = map_state["last_clicked"].get("lng")
-                if lat_click is not None and lon_click is not None:
-                    st.info(f"クリックした地点: {lat_click:.4f}, {lon_click:.4f}")
-                    update_selected_location(lat_click, lon_click)
-                    st.session_state.map_center = {"lat": lat_click, "lon": lon_click}
-                    st.session_state.map_zoom = 13
+        if map_state and map_state.get("last_clicked"):
+            lat_click = map_state["last_clicked"].get("lat")
+            lon_click = map_state["last_clicked"].get("lng")
+            if lat_click is not None and lon_click is not None:
+                new_click = (float(lat_click), float(lon_click))
+                if st.session_state.last_click != new_click:
+                    st.session_state.last_click = new_click
+                    st.session_state.lat, st.session_state.lon = new_click
+                    st.session_state.place_name = reverse_geocode(*new_click) or "未取得"
+                    st.session_state.trigger_fetch = True
                     st.rerun()
-        st.caption(f"現在の座標: {st.session_state.selected_location['lat']:.4f}, "
-                   f"{st.session_state.selected_location['lon']:.4f}")
-        st.caption("\n".join(wrap(st.session_state.get("selected_place_name", "未取得") or "未取得", 25)))
-
-    with input_container:
-        st.subheader("緯度・経度を直接入力")
-        lat_value = st.number_input("緯度", min_value=-90.0, max_value=90.0,
-                                    value=float(st.session_state.lat_input), step=0.1)
-        lon_value = st.number_input("経度", min_value=-180.0, max_value=180.0,
-                                    value=float(st.session_state.lon_input), step=0.1)
-        if not math.isclose(lat_value, st.session_state.selected_location["lat"], abs_tol=1e-4) or not math.isclose(
-            lon_value, st.session_state.selected_location["lon"], abs_tol=1e-4
-        ):
-            update_selected_location(lat_value, lon_value)
-            st.rerun()
-        st.metric("緯度", f"{st.session_state.selected_location['lat']:.4f}")
-        st.metric("経度", f"{st.session_state.selected_location['lon']:.4f}")
-        st.text_area(
-            "推定された地名",
-            "\n".join(wrap(st.session_state.get("selected_place_name", "未取得") or "未取得", 25)),
-            height=80,
-        )
-
-        st.subheader("地点登録（最大20件）")
-        st.text_input("地点ラベル (省略可)", key="save_label")
-        if st.button("現在の地点を登録", use_container_width=True):
-            label = st.session_state.save_label.strip() or f"地点 {len(st.session_state.saved_locations) + 1}"
-            saved = st.session_state.saved_locations
-            replaced = False
-            for loc in saved:
-                if loc["name"] == label:
-                    loc["lat"] = st.session_state.selected_location["lat"]
-                    loc["lon"] = st.session_state.selected_location["lon"]
-                    replaced = True
-                    break
-            if not replaced:
-                if len(saved) >= 20:
-                    saved.pop(0)
-                saved.append(
-                    {
-                        "name": label,
-                        "lat": st.session_state.selected_location["lat"],
-                        "lon": st.session_state.selected_location["lon"],
-                    }
-                )
-            st.success(f"「{label}」を登録しました。")
-
-        if st.session_state.saved_locations:
-            options = [f"{loc['name']} ({loc['lat']:.2f}, {loc['lon']:.2f})" for loc in st.session_state.saved_locations]
-            saved_choice = st.selectbox("登録済み地点", options=options, key="saved_select")
-            if st.button("選択した地点を呼び出す", use_container_width=True):
-                idx = options.index(saved_choice)
-                target = st.session_state.saved_locations[idx]
-                update_selected_location(target["lat"], target["lon"])
-                st.info(f"{target['name']} を読み込みました。")
-                st.rerun()
-        else:
-            st.info("まだ登録された地点はありません。")
-
-    st.markdown("---")
-
-    refresh = st.button("雲量を再取得", type="primary")
-    must_refresh = refresh or "latest_data" not in st.session_state
-
-    if must_refresh:
-        lat = st.session_state.selected_location["lat"]
-        lon = st.session_state.selected_location["lon"]
-        with st.spinner("Open-Meteo API から雲量データを取得しています..."):
-            base_times = None
-            metadata = []
-            for info in MODEL_INFOS:
-                display_name, model_code = info["display_name"], info["code"]
-                try:
-                    df = fetch_forecast(lat, lon, model_code)
-                    df = filter_next_hours(df)
-                except Exception as exc:  # noqa: BLE001
-                    st.error(f"{display_name} の取得に失敗しました: {exc}")
-                    continue
-
-                renamed = df.rename(columns={"cloud_cover": display_name})
-                if base_times is None:
-                    base_times = renamed[["time", display_name]]
                 else:
-                    base_times = base_times.merge(renamed[["time", display_name]], on="time", how="outer")
+                    st.info(f"地図で選択: {lat_click:.4f}, {lon_click:.4f}")
 
-                tz_label = df["timezone"].iloc[0] if "timezone" in df.columns and not df.empty else "不明"
-                metadata.append({"モデル": display_name, "データ件数": len(df), "タイムゾーン": tz_label})
+        st.caption(f"現在の座標: {st.session_state.lat:.4f}, {st.session_state.lon:.4f}")
+        st.caption(f"推定された地名: {st.session_state.place_name}")
 
-            if base_times is None or base_times.empty:
-                st.warning("有効なデータが取得できませんでした。地点を変更するか時間をおいて再試行してください。")
-                return
+        if st.session_state.trigger_fetch:
+            st.session_state.trigger_fetch = False
+            try:
+                with st.spinner("Open-Meteo からデータ取得中..."):
+                    ts_df, metadata = load_models(st.session_state.lat, st.session_state.lon)
+                st.session_state.data = ts_df
+                st.session_state.metadata = metadata
+                st.success("データを更新しました。")
+            except Exception as exc:  # noqa: BLE001
+                st.error(f"取得に失敗しました: {exc}")
 
-            base_times = base_times.sort_values("time").reset_index(drop=True)
-            st.session_state.latest_data = {"timeseries": base_times, "metadata": metadata}
+        if st.session_state.get("data") is None:
+            st.info("地図をクリックするか、サイドバーで地点を指定して雲量を取得してください。")
+            return
 
-    if "latest_data" not in st.session_state:
-        st.info("まず地点を選択し、データを取得してください。")
-        return
+        ts_df = st.session_state.data
+        metadata = st.session_state.metadata or []
 
-    ts_df = st.session_state.latest_data["timeseries"]
-    metadata = st.session_state.latest_data["metadata"]
-
-    st.subheader("モデル別データ状況")
-    st.table(pd.DataFrame(metadata))
-
-    with st.container():
-        st.markdown(
-            "<div style='margin:0; padding:0; font-size:1.6rem; font-weight:700;'>48 時間の雲量推移</div>",
-            unsafe_allow_html=True,
-        )
+        st.subheader("48 時間の雲量推移")
         chart_df = prepare_chart_data(ts_df)
         if chart_df.empty:
-            st.info("各モデルで有効な雲量データを取得できませんでした。")
+            st.info("有効な雲量データがありません。")
         else:
-            render_responsive_chart(build_line_chart(chart_df, mobile=mobile_mode), mobile=mobile_mode)
+            st.altair_chart(build_line_chart(chart_df), use_container_width=False)
 
-    st.subheader("詳細データ")
-    st.dataframe(ts_df, use_container_width=True, height=360)
+        st.subheader("詳細データ")
+        st.dataframe(ts_df, use_container_width=True, height=360)
 
-    st.markdown("---")
-    st.subheader("モデルの概要")
-    for info in MODEL_INFOS:
-        st.markdown(f"**{info['display_name']}**: {info['desc']}")
+        st.subheader("モデル別データ状況")
+        st.table(pd.DataFrame(metadata))
+
+    with tab_manage:
+        st.subheader("モデルの雲量グラフ（登録地点から選択）")
+        saved = st.session_state.saved_locations
+        if not saved:
+            st.info("登録済みの地点がありません。サイドバーまたは比較モードで地点を登録してください。")
+        else:
+            loc_options = [f"{loc['name']} ({loc['lat']:.3f}, {loc['lon']:.3f})" for loc in saved]
+            choice = st.selectbox("登録地点を選択", options=loc_options, key="manage_select")
+            model_options = [m["display_name"] for m in MODEL_INFOS]
+            model_choice = st.selectbox("モデルを選択", options=model_options, key="manage_model_select")
+
+            if st.button("選択した地点とモデルの雲量を表示", key="manage_fetch"):
+                idx = loc_options.index(choice)
+                target = saved[idx]
+                model_code = next(m["code"] for m in MODEL_INFOS if m["display_name"] == model_choice)
+                try:
+                    with st.spinner("Open-Meteo からデータ取得中..."):
+                        layer_df = fetch_layered_forecast(target["lat"], target["lon"], model_code)
+                        layer_df = filter_next_hours(layer_df)
+                    st.session_state.layer_data = layer_df
+                    st.session_state.layer_model = model_choice
+                    st.session_state.lat = target["lat"]
+                    st.session_state.lon = target["lon"]
+                    st.session_state.place_name = target.get("place_name") or target["name"]
+                    st.session_state.last_click = (target["lat"], target["lon"])
+                    st.success(f"{target['name']} / {model_choice} のデータを更新しました。")
+                except Exception as exc:  # noqa: BLE001
+                    st.error(f"取得に失敗しました: {exc}")
+
+            if st.button("この地点で全モデル検証＆JSON出力", key="manage_diag"):
+                idx = loc_options.index(choice)
+                target = saved[idx]
+                diagnostics: List[Dict[str, object]] = []
+                for info in MODEL_INFOS:
+                    model_code = info["code"]
+                    label = info["display_name"]
+                    entry: Dict[str, object] = {"model": label, "code": model_code}
+                    try:
+                        df = fetch_layered_forecast(target["lat"], target["lon"], model_code)
+                        df = filter_next_hours(df)
+                        entry["status"] = "success"
+                        entry["rows"] = len(df)
+                        entry["time_start"] = df["time"].min().isoformat() if not df.empty else None
+                        entry["time_end"] = df["time"].max().isoformat() if not df.empty else None
+                        if not df.empty:
+                            export_df = df.copy()
+                            export_df["time"] = export_df["time"].dt.strftime("%Y-%m-%dT%H:%M:%S")
+                            entry["data"] = export_df.fillna("").to_dict(orient="records")
+                    except Exception as exc:  # noqa: BLE001
+                        entry["status"] = "error"
+                        entry["error"] = str(exc)
+                    diagnostics.append(entry)
+                st.session_state.model_diagnostics = diagnostics
+                st.success("全モデルの検証が完了しました。下のJSONをダウンロードできます。")
+                diag_json = json.dumps(diagnostics, ensure_ascii=False, indent=2)
+                st.download_button(
+                    "検証結果をJSONダウンロード",
+                    data=diag_json.encode("utf-8"),
+                    file_name="model_diagnostics.json",
+                    mime="application/json",
+                    key="diag_download",
+                )
+
+            layer_df = st.session_state.get("layer_data")
+            if layer_df is not None and not layer_df.empty:
+                st.caption(
+                    f"現在の座標: {st.session_state.lat:.4f}, {st.session_state.lon:.4f} / "
+                    f"推定地名: {st.session_state.place_name}"
+                )
+                chart_df = prepare_layer_chart_data(layer_df)
+                st.subheader(f"{st.session_state.layer_model} の層別雲量（48 時間）")
+                st.altair_chart(build_layer_chart(chart_df, st.session_state.layer_model), use_container_width=False)
+                st.subheader("詳細データ")
+                st.dataframe(layer_df, use_container_width=True, height=360)
+            else:
+                st.info("地点とモデルを選択して「選択した地点とモデルの雲量を表示」を押してください。")
 
 
 if __name__ == "__main__":
