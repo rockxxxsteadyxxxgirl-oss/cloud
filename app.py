@@ -25,6 +25,12 @@ import streamlit as st
 from geopy.geocoders import Nominatim
 from streamlit_folium import st_folium
 
+# Optional: GPS
+try:
+    from streamlit_geolocation import streamlit_geolocation
+except Exception:
+    streamlit_geolocation = None  # GPS なしで動作可
+
 # =========================
 # 定数・モデル定義
 # =========================
@@ -960,8 +966,27 @@ def render_control_panel() -> None:
                 st.session_state["trigger_fetch"] = True
                 st.success(f"地点を更新しました：{name}")
     with col2:
-        # GPS 機能は削除：案内のみ
-        st.caption("※ 現在地は、地図タップ／地名検索／緯度経度入力で指定してください。")
+        # GPS (Optional)
+        if streamlit_geolocation is not None:
+            if st.button("📍 GPS で取得"):
+                try:
+                    loc = streamlit_geolocation()
+                    if loc and loc.get("latitude") is not None and loc.get("longitude") is not None:
+                        lat = float(loc["latitude"])
+                        lon = float(loc["longitude"])
+                        st.session_state["lat"] = lat
+                        st.session_state["lon"] = lon
+                        name = reverse_geocode(lat, lon)
+                        st.session_state["place_name"] = name
+                        st.session_state["map_zoom"] = 13   # GPS 取得時もズームアップ
+                        st.session_state["trigger_fetch"] = True
+                        st.success("現在地を反映しました。")
+                    else:
+                        st.error("現在地が取得できませんでした。位置情報の権限を確認してください。")
+                except Exception as e:
+                    st.error(f"GPS 取得中にエラーが発生しました: {e}")
+        else:
+            st.caption("※ GPS 機能を使うには `pip install streamlit-geolocation` が必要です。")
 
     # 緯度・経度手動入力
     st.markdown("#### 緯度・経度（手動調整）")
@@ -1017,6 +1042,7 @@ def render_map_and_click() -> None:
 
     # 地図タイル：常にライトモード相当（OpenStreetMap）を使用
     tiles = "OpenStreetMap"
+
     zoom = st.session_state.get("map_zoom", 6)
 
     m = folium.Map(location=[lat, lon], zoom_start=zoom, tiles=tiles)
