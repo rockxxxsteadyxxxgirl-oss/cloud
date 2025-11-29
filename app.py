@@ -12,7 +12,6 @@ import folium
 import pandas as pd
 import requests
 import streamlit as st
-import streamlit-geolocation
 from geopy.geocoders import Nominatim
 from streamlit_folium import st_folium
 
