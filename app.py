@@ -25,12 +25,6 @@ import streamlit as st
 from geopy.geocoders import Nominatim
 from streamlit_folium import st_folium
 
-# Optional: GPS
-try:
-    from streamlit_geolocation import streamlit_geolocation
-except Exception:
-    streamlit_geolocation = None  # GPS なしで動作可
-
 # =========================
 # 定数・モデル定義
 # =========================
@@ -350,7 +344,7 @@ def init_session_state() -> None:
     st.session_state.setdefault("model_diagnostics", None)
     st.session_state.setdefault("selected_models", [])
     st.session_state.setdefault("multiselect_models", [])  # モデル選択用 UI 値
-    st.session_state.setdefault("map_zoom", 9)             # 地図のズームレベル（初期は 6）
+    st.session_state.setdefault("map_zoom", 6)             # 地図のズームレベル（初期は 6）
 
 
 # ジオコーディング
@@ -966,36 +960,8 @@ def render_control_panel() -> None:
                 st.session_state["trigger_fetch"] = True
                 st.success(f"地点を更新しました：{name}")
     with col2:
-        # GPS (Optional)
-        if streamlit_geolocation is not None:
-            if st.button("📍 GPS で取得"):
-                try:
-                    # ★ デバッグ用：返ってきた内容をそのまま表示
-                    loc = streamlit_geolocation()
-                    st.write("📍 streamlit_geolocation() の返り値:", loc)
-
-                    if loc and loc.get("latitude") is not None and loc.get("longitude") is not None:
-                        lat = float(loc["latitude"])
-                        lon = float(loc["longitude"])
-                        st.session_state["lat"] = lat
-                        st.session_state["lon"] = lon
-                        name = reverse_geocode(lat, lon)
-                        st.session_state["place_name"] = name
-                        st.session_state["map_zoom"] = 13   # GPS 取得時もズームアップ
-                        st.session_state["trigger_fetch"] = True
-                        st.success("現在地を反映しました。")
-                    else:
-                        st.warning(
-                            "現在地が取得できませんでした。\n"
-                            "・ブラウザの位置情報許可\n"
-                            "・HTTPS ではない接続（例: スマホから http://192.168... にアクセス）\n"
-                            "などの理由で取得できない場合があります。"
-                        )
-                except Exception as e:
-                    st.error(f"GPS 取得中にエラーが発生しました: {e}")
-        else:
-            st.caption("※ GPS 機能を使うには `pip install streamlit-geolocation` が必要です。")
-
+        # GPS 機能は削除：案内のみ
+        st.caption("※ 現在地は、地図タップ／地名検索／緯度経度入力で指定してください。")
 
     # 緯度・経度手動入力
     st.markdown("#### 緯度・経度（手動調整）")
@@ -1051,7 +1017,6 @@ def render_map_and_click() -> None:
 
     # 地図タイル：常にライトモード相当（OpenStreetMap）を使用
     tiles = "OpenStreetMap"
-
     zoom = st.session_state.get("map_zoom", 6)
 
     m = folium.Map(location=[lat, lon], zoom_start=zoom, tiles=tiles)
@@ -1320,4 +1285,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
