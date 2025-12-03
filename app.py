@@ -103,8 +103,10 @@ def fetch_forecast(lat: float, lon: float, model: str) -> Tuple[pd.DataFrame, st
     has_fraction = ((candidate % 1) != 0).any()
 
     # 総雲量が 0/1 しかない or 欠損 → 層別の最大値で代用
-    if (candidate.isna().all()
-        or (max_val is not None and max_val <= 1 and not has_fraction)) and has_layer_data:
+    if (
+        candidate.isna().all()
+        or (max_val is not None and max_val <= 1 and not has_fraction)
+    ) and has_layer_data:
         candidate = pd.concat([low, mid, high], axis=1).max(axis=1)
         max_val = candidate.max(skipna=True)
         has_fraction = ((candidate % 1) != 0).any()
@@ -121,10 +123,16 @@ def filter_next_hours(df: pd.DataFrame, hours: int = 48) -> pd.DataFrame:
     """直近 hours 時間だけに絞る。"""
     if df.empty:
         return df
-    now = pd.Timestamp.now(tz=df["time"].dt.tz)
+    now = pd.Timestamp.now()
     cutoff = now + timedelta(hours=hours)
+    if not pd.api.types.is_datetime64_any_dtype(df["time"]):
+        df = df.copy()
+        df["time"] = pd.to_datetime(df["time"])
     filtered = df[(df["time"] >= now) & (df["time"] <= cutoff)].copy()
-    filtered["time"] = filtered["time"].dt.tz_localize(None)
+    try:
+        filtered["time"] = filtered["time"].dt.tz_localize(None)
+    except TypeError:
+        pass
     return filtered
 
 
@@ -270,6 +278,24 @@ def parse_latlon(text: str) -> Optional[Tuple[float, float]]:
     return lat, lon
 
 
+@st.cache_data(ttl=3600, show_spinner=False)
+def _reverse_geocode_cached(lat: float, lon: float) -> Optional[str]:
+    """逆ジオコーディング（キャッシュ付き内部実装）。"""
+    try:
+        geocoder = Nominatim(user_agent="cloud_cover_simple_app", timeout=5)
+        result = geocoder.reverse((lat, lon), language="ja")
+        if result is None:
+            return None
+        return result.address
+    except Exception:
+        return None
+
+
+def reverse_geocode(lat: float, lon: float) -> Optional[str]:
+    """逆ジオコーディングで地名を取得（失敗したら None）。"""
+    return _reverse_geocode_cached(lat, lon)
+
+
 def geocode_place(query: str) -> Optional[Tuple[float, float, Optional[str]]]:
     """
     地名/住所 または "緯度, 経度" を受け取り、(lat, lon, 名前) を返す。
@@ -277,39 +303,20 @@ def geocode_place(query: str) -> Optional[Tuple[float, float, Optional[str]]]:
     if not query.strip():
         return None
 
-    # まずは「緯度, 経度」として解釈を試みる
     coords = parse_latlon(query)
     if coords is not None:
         lat, lon = coords
-        try:
-            geocoder = Nominatim(user_agent="cloud_cover_simple_app", timeout=5)
-            result = geocoder.reverse((lat, lon), language="ja")
-            name = result.address if result is not None else None
-        except Exception:
-            name = None
+        name = reverse_geocode(lat, lon)
         if not name:
             name = f"{lat:.5f}, {lon:.5f}"
         return lat, lon, name
 
-    # 通常の地名検索
     try:
         geocoder = Nominatim(user_agent="cloud_cover_simple_app", timeout=5)
         result = geocoder.geocode(query)
         if result is None:
             return None
         return float(result.latitude), float(result.longitude), result.address
-    except Exception:
-        return None
-
-
-def reverse_geocode(lat: float, lon: float) -> Optional[str]:
-    """逆ジオコーディングで地名を取得（失敗したら None）。"""
-    try:
-        geocoder = Nominatim(user_agent="cloud_cover_simple_app", timeout=5)
-        result = geocoder.reverse((lat, lon), language="ja")
-        if result is None:
-            return None
-        return result.address
     except Exception:
         return None
 
@@ -345,7 +352,7 @@ def normalize_cloud(series: pd.Series) -> pd.Series:
 
 
 def fetch_layered_forecast(lat: float, lon: float, model: str) -> pd.DataFrame:
-    """層別雲量（総雲量＋下層・中層・上層）の 48h 分を取得。"""
+    """層別雲量（総雲量＋下層・中層・上層）のデータを取得（フィルタ前）。"""
     params = {
         "latitude": round_coord(lat),
         "longitude": round_coord(lon),
@@ -375,8 +382,10 @@ def fetch_layered_forecast(lat: float, lon: float, model: str) -> pd.DataFrame:
     )
     max_val = total.max(skipna=True)
     has_fraction = ((total % 1) != 0).any()
-    if (total.isna().all()
-        or (max_val is not None and max_val <= 1 and not has_fraction)) and has_layer_data:
+    if (
+        total.isna().all()
+        or (max_val is not None and max_val <= 1 and not has_fraction)
+    ) and has_layer_data:
         total = pd.concat([low, mid, high], axis=1).max(axis=1)
         total = normalize_cloud(total)
 
@@ -389,7 +398,7 @@ def fetch_layered_forecast(lat: float, lon: float, model: str) -> pd.DataFrame:
             "上層雲": high,
         }
     )
-    return filter_next_hours(df)
+    return df
 
 
 def load_saved_locations_from_disk() -> List[Dict[str, object]]:
@@ -454,20 +463,20 @@ def init_state() -> None:
         "model_diagnostics": [],
         "selected_models": None,
         "theme_mode": "dark",
-        "map_zoom": 13,               # 地図のズームレベル
-        "last_layer_model_choice": None,  # モデルの雲量グラフ用 前回モデル
+        "map_zoom": 13,
+        "last_layer_model_choice": None,
+        "map_center_lat": 35.6812,
+        "map_center_lon": 139.7671,
     }
     for key, val in defaults.items():
         if key not in st.session_state:
             st.session_state[key] = val
 
-    # 登録地点の復元
     if not st.session_state.get("saved_locations"):
         disk_locations = load_saved_locations_from_disk()
         if disk_locations:
             st.session_state.saved_locations = disk_locations
 
-    # 表示モデル選択の復元
     if st.session_state.selected_models is None:
         all_names = [m["display_name"] for m in MODEL_INFOS]
         cfg = load_config_from_disk()
@@ -481,7 +490,7 @@ def init_state() -> None:
 
 def apply_theme_css(mode: str) -> None:
     """ダークテーマのみ使用。"""
-    is_dark = (mode == "dark")
+    is_dark = mode == "dark"
     if is_dark:
         bg = "#020617"
         fg = "#e5e7eb"
@@ -525,8 +534,9 @@ def render_saved_locations(saved: List[Dict[str, object]]) -> None:
             st.session_state.lon = target["lon"]
             st.session_state.place_name = target.get("place_name") or target["name"]
             st.session_state.last_click = (target["lat"], target["lon"])
+            st.session_state.map_center_lat = target["lat"]
+            st.session_state.map_center_lon = target["lon"]
             st.session_state.trigger_fetch = True
-            st.session_state.map_zoom = 13  # 呼び出し時もズームイン
             st.success(f"{target['name']} を読み込みました。")
 
         if st.button("選択した地点を削除する", type="secondary"):
@@ -539,8 +549,10 @@ def render_saved_locations(saved: List[Dict[str, object]]) -> None:
         st.info("登録済みの地点はまだありません。")
 
     st.markdown("**登録地点の一覧 / エクスポート**")
-    saved_df = pd.DataFrame(saved)[["name", "lat", "lon", "place_name"]] if saved else pd.DataFrame(
-        columns=["name", "lat", "lon", "place_name"]
+    saved_df = (
+        pd.DataFrame(saved)[["name", "lat", "lon", "place_name"]]
+        if saved
+        else pd.DataFrame(columns=["name", "lat", "lon", "place_name"])
     )
     st.dataframe(
         saved_df.rename(columns={"name": "ラベル", "lat": "緯度", "lon": "経度", "place_name": "地名"}).style.format(
@@ -577,7 +589,14 @@ def render_saved_locations(saved: List[Dict[str, object]]) -> None:
                 if not name or lat is None or lon is None:
                     continue
                 place_name = str(item.get("place_name") or item.get("name") or name)
-                cleaned.append({"name": name, "lat": float(lat), "lon": float(lon), "place_name": place_name})
+                cleaned.append(
+                    {
+                        "name": name,
+                        "lat": float(lat),
+                        "lon": float(lon),
+                        "place_name": place_name,
+                    }
+                )
 
             if not cleaned:
                 raise ValueError("有効な地点データが見つかりませんでした。")
@@ -612,12 +631,14 @@ def render_control_panel() -> None:
             st.session_state.lat, st.session_state.lon = lat, lon
             st.session_state.last_click = (lat, lon)
             st.session_state.place_name = name or query
+            st.session_state.map_center_lat = lat
+            st.session_state.map_center_lon = lon
             st.session_state.trigger_fetch = True
-            st.session_state.map_zoom = 13  # 検索時もズームイン
             st.success(f"座標を更新: {lat:.5f}, {lon:.5f}")
         else:
             st.error("地名/座標を特定できませんでした。")
 
+    # 緯度・経度の直接入力
     st.session_state.lat = st.number_input(
         "緯度",
         min_value=-90.0,
@@ -651,8 +672,9 @@ def render_control_panel() -> None:
                     st.session_state.lon = lon
                     st.session_state.last_click = (lat, lon)
                     st.session_state.place_name = reverse_geocode(lat, lon) or "現在地（推定）"
+                    st.session_state.map_center_lat = lat
+                    st.session_state.map_center_lon = lon
                     st.session_state.trigger_fetch = True
-                    st.session_state.map_zoom = 13  # GPS取得時もズームイン
                     st.success(f"現在地を取得しました: {lat:.5f}, {lon:.5f}")
                 except Exception as exc:  # noqa: BLE001
                     st.error(f"現在地の取得に失敗しました: {exc}")
@@ -670,8 +692,11 @@ def render_control_panel() -> None:
         for loc in saved:
             if loc["name"] == label:
                 loc.update(
-                    {"lat": st.session_state.lat, "lon": st.session_state.lon,
-                     "place_name": st.session_state.place_name}
+                    {
+                        "lat": st.session_state.lat,
+                        "lon": st.session_state.lon,
+                        "place_name": st.session_state.place_name,
+                    }
                 )
                 replaced = True
                 break
@@ -699,25 +724,26 @@ def main() -> None:
 
     init_state()
 
-    # テーマはダークのみ
     st.session_state.theme_mode = "dark"
     apply_theme_css(st.session_state.theme_mode)
 
     st.title("雲量比較")
     st.caption("Open-Meteo の複数モデルで直近 48 時間の雲量を比較します。")
 
-    # === 地図をページ一番上に表示 ===
+    # === 地図 ===
     st.subheader("地図で地点を選択")
 
     selected_lat = st.session_state.lat
     selected_lon = st.session_state.lon
     current_zoom = st.session_state.get("map_zoom", 13)
 
-    # ダークモードでも地図はライト（OpenStreetMap）で表示
+    center_lat = st.session_state.get("map_center_lat", selected_lat)
+    center_lon = st.session_state.get("map_center_lon", selected_lon)
+
     tiles = "OpenStreetMap"
 
     map_fig = folium.Map(
-        location=[selected_lat, selected_lon],
+        location=[center_lat, center_lon],
         zoom_start=current_zoom,
         control_scale=True,
         tiles=tiles,
@@ -733,14 +759,12 @@ def main() -> None:
         map_fig,
         height=420,
         key="map",
-        returned_objects=["last_clicked", "zoom"],
+        returned_objects=["last_clicked", "zoom", "center"],
         use_container_width=True,
     )
 
-    clicked_new_point = False
-
     if map_state:
-        # クリック処理
+        # 地図クリック → 座標と地名を更新し、即データ取得トリガー
         if map_state.get("last_clicked"):
             lat_click = map_state["last_clicked"].get("lat")
             lon_click = map_state["last_clicked"].get("lng")
@@ -750,14 +774,22 @@ def main() -> None:
                     st.session_state.last_click = new_click
                     st.session_state.lat, st.session_state.lon = new_click
                     st.session_state.place_name = reverse_geocode(*new_click) or "未取得"
+                    st.session_state.map_center_lat = new_click[0]
+                    st.session_state.map_center_lon = new_click[1]
+                    # クリックしたら自動で雲量取得
                     st.session_state.trigger_fetch = True
-                    st.session_state.map_zoom = 13  # 新しい地点をクリックしたらズーム 13 に
-                    clicked_new_point = True
-                else:
-                    st.info(f"地図で選択: {lat_click:.5f}, {lon_click:.5f}")
 
-        # クリックしていない場合は、ユーザー操作のズームを保存
-        if not clicked_new_point and "zoom" in map_state and map_state["zoom"] is not None:
+        # ユーザーがドラッグした中心位置を保存
+        center = map_state.get("center")
+        if isinstance(center, dict):
+            try:
+                st.session_state.map_center_lat = float(center.get("lat", st.session_state.map_center_lat))
+                st.session_state.map_center_lon = float(center.get("lng", st.session_state.map_center_lon))
+            except Exception:
+                pass
+
+        # ズームレベルも保存
+        if "zoom" in map_state and map_state["zoom"] is not None:
             try:
                 st.session_state.map_zoom = int(map_state["zoom"])
             except Exception:
@@ -766,7 +798,11 @@ def main() -> None:
     st.caption(f"現在の座標: {st.session_state.lat:.5f}, {st.session_state.lon:.5f}")
     st.caption(f"推定された地名: {st.session_state.place_name}")
 
-    # 地図やフォームから指定された地点でデータ取得
+    # 手動で雲量取得（必要なら）
+    if st.button("この地点の雲量を取得（地図で選択した座標）", key="fetch_from_map_top"):
+        st.session_state.trigger_fetch = True
+
+    # データ取得
     if st.session_state.trigger_fetch:
         st.session_state.trigger_fetch = False
         try:
@@ -778,11 +814,9 @@ def main() -> None:
         except Exception as exc:  # noqa: BLE001
             st.error(f"取得に失敗しました: {exc}")
 
-    # 初期表示は閉じた状態
     with st.expander("地点の指定・登録（タップで開閉）", expanded=False):
         render_control_panel()
 
-    # タブ
     tab_compare, tab_manage = st.tabs(["比較モード", "モデルの雲量グラフ"])
 
     # === 比較モード ===
@@ -793,9 +827,8 @@ def main() -> None:
         metadata = st.session_state.get("metadata") or []
 
         if ts_df is None:
-            st.info("地図をクリックするか、上部フォームで地点を指定して雲量を取得してください。")
+            st.info("地図で地点を選択してから「雲量を取得」ボタンを押してください。")
         else:
-            # --- モデル選択＆プリセット ---
             all_display_names = [m["display_name"] for m in MODEL_INFOS]
             if not st.session_state.get("selected_models"):
                 st.session_state.selected_models = all_display_names
@@ -909,7 +942,6 @@ def main() -> None:
                     save_config_to_disk(cfg)
                     st.success(f"プリセット「{preset_select}」を削除しました。")
 
-            # --- グラフ本体 ---
             selected_display = st.multiselect(
                 "グラフに表示するモデル",
                 options=all_display_names,
@@ -959,7 +991,6 @@ def main() -> None:
     with tab_manage:
         st.subheader("モデルの雲量グラフ（現在の地点）")
 
-        # 現在の地点（地図やフォームで指定した座標）だけを使用
         target_lat: float = st.session_state.lat
         target_lon: float = st.session_state.lon
         target_label: str = st.session_state.place_name or "現在の地点"
@@ -969,23 +1000,18 @@ def main() -> None:
             f"推定された地名: {target_label}"
         )
 
-        # モデル選択
         model_options = [m["display_name"] for m in MODEL_INFOS]
         model_choice = st.selectbox("モデルを選択", options=model_options, key="manage_model_select")
 
-        # モデル選択時に自動取得
         auto_fetch = False
         prev_choice = st.session_state.get("last_layer_model_choice")
 
-        # 初回は prev_choice が None → そのタイミングではまだ自動取得しない
         if prev_choice is None:
             st.session_state.last_layer_model_choice = model_choice
         elif model_choice != prev_choice:
-            # ユーザーが前回からモデルを変更したときだけ自動取得
             st.session_state.last_layer_model_choice = model_choice
             auto_fetch = True
 
-        # ボタン群（手動更新も可能なまま）
         col_b1, col_b2 = st.columns(2)
         with col_b1:
             manual_clicked = st.button("選択したモデルの雲量を表示", key="manage_fetch")
@@ -1002,11 +1028,17 @@ def main() -> None:
                         df = filter_next_hours(df)
                         entry["status"] = "success"
                         entry["rows"] = len(df)
-                        entry["time_start"] = df["time"].min().isoformat() if not df.empty else None
-                        entry["time_end"] = df["time"].max().isoformat() if not df.empty else None
+                        entry["time_start"] = (
+                            df["time"].min().isoformat() if not df.empty else None
+                        )
+                        entry["time_end"] = (
+                            df["time"].max().isoformat() if not df.empty else None
+                        )
                         if not df.empty:
                             export_df = df.copy()
-                            export_df["time"] = export_df["time"].dt.strftime("%Y-%m-%dT%H:%M:%S")
+                            export_df["time"] = export_df["time"].dt.strftime(
+                                "%Y-%m-%dT%H:%M:%S"
+                            )
                             entry["data"] = export_df.fillna("").to_dict(orient="records")
                     except Exception as exc:  # noqa: BLE001
                         entry["status"] = "error"
@@ -1025,7 +1057,6 @@ def main() -> None:
                     key="diag_download",
                 )
 
-        # 自動取得 or ボタン押下で層別データを取得
         if auto_fetch or manual_clicked:
             model_code = next(m["code"] for m in MODEL_INFOS if m["display_name"] == model_choice)
             try:
@@ -1034,13 +1065,11 @@ def main() -> None:
                     layer_df = filter_next_hours(layer_df)
                 st.session_state.layer_data = layer_df
                 st.session_state.layer_model = model_choice
-                # ※ここでは lat / lon / place_name は書き換えない（現在地点を参照するだけ）
                 if not auto_fetch:
                     st.success(f"{target_label} / {model_choice} のデータを更新しました。")
             except Exception as exc:  # noqa: BLE001
                 st.error(f"取得に失敗しました: {exc}")
 
-        # グラフ表示
         layer_df = st.session_state.get("layer_data")
         if layer_df is not None and not layer_df.empty:
             st.caption(
