@@ -14,6 +14,7 @@ import numpy as np
 import pandas as pd
 import requests
 import streamlit as st
+import time
 from geopy.geocoders import Nominatim
 from PIL import Image
 from streamlit_folium import st_folium
@@ -62,7 +63,7 @@ THEME_BG = "#0b1224"
 THEME_PANEL = "#111827"
 THEME_TEXT = "#e5e7eb"
 THEME_GRID = "#1f2937"
-CHART_MIN_WIDTH = 1400
+CHART_MIN_WIDTH = 2600
 
 
 def round_coord(value: float) -> float:
@@ -193,6 +194,8 @@ def init_state() -> None:
         "last_layer_model_choice": None,
         "meteo_df": None,
         "timelapse_index": 0,
+        "timelapse_play": False,
+        "timelapse_interval": 0.8,
         "map_version": 0,
     }
     for key, val in defaults.items():
@@ -385,10 +388,14 @@ def analyze_vertical_cloud(layer_df: pd.DataFrame, hours: int = 24) -> pd.DataFr
         return pd.DataFrame()
 
     df = layer_df.copy().sort_values("time")
+    start_time = None
+    end_time = None
     if "time" in df.columns:
         t0 = df["time"].min()
         t1 = t0 + pd.Timedelta(hours=hours)
         df = df[(df["time"] >= t0) & (df["time"] <= t1)]
+        start_time = df["time"].min() if not df.empty else None
+        end_time = df["time"].max() if not df.empty else None
 
     if df.empty:
         return pd.DataFrame()
@@ -415,7 +422,11 @@ def analyze_vertical_cloud(layer_df: pd.DataFrame, hours: int = 24) -> pd.DataFr
 
         records.append({"層": col, "想定高度帯": altitude_hint, "平均雲量(%)": f"{mean_val:.1f}%", "雲量30%未満の時間割合": f"{frac_clear * 100:.1f}%"})
 
-    return pd.DataFrame(records)
+    result = pd.DataFrame(records)
+    if not result.empty:
+        result["表示開始時刻"] = start_time
+        result["表示終了時刻"] = end_time
+    return result
 
 
 def normalize_cloud(series: pd.Series) -> pd.Series:
@@ -1204,13 +1215,26 @@ def render_vertical_analysis_section() -> None:
         st.info("まず上で層別データを取得してください。")
         return
 
-    hours_for_analysis = st.slider("解析対象とする時間範囲（先頭からの時間）", 1, 72, 24, step=1)
+    # スライダーの目盛りに実際の時間帯を表示
+    start_dt = layer_df["time"].min()
+    def format_hour_range(h: int) -> str:
+        end_dt = start_dt + pd.Timedelta(hours=h)
+        return f"{start_dt:%Y-%m-%d %H:%M} → {end_dt:%Y-%m-%d %H:%M}"
+
+    hours_for_analysis = st.select_slider(
+        "解析対象とする時間範囲",
+        options=list(range(1, 73)),
+        value=24,
+        format_func=format_hour_range,
+    )
     analysis_df = analyze_vertical_cloud(layer_df, hours=hours_for_analysis)
     if analysis_df.empty:
         st.info("解析対象のデータが不足しています。")
         return
 
-    st.caption(f"※ ここでは簡易的に、層別の平均雲量と「雲量 < 30%」の時間割合を算出しています。（対象: 先頭 {hours_for_analysis} 時間）")
+    end_dt = start_dt + pd.Timedelta(hours=hours_for_analysis)
+    st.caption(f"表示時刻: {end_dt:%Y-%m-%d %H:%M}（先頭から {hours_for_analysis} 時間地点）")
+    st.caption("※ 層別の平均雲量と「雲量 < 30%」の時間割合を簡易算出しています。")
     st.table(analysis_df)
 
 
@@ -1243,6 +1267,24 @@ def render_meteo_section() -> None:
     if total_frames <= 0:
         return
 
+    # 自動再生中はスライダー生成前に次フレームをセット
+    if st.session_state.get("timelapse_play"):
+        next_idx = (st.session_state.get("timelapse_index", 0) + 1) % total_frames
+        st.session_state["timelapse_index"] = next_idx
+
+    c_auto, c_speed = st.columns([1, 2])
+    with c_auto:
+        play_label = "⏯ 自動再生 ON" if not st.session_state.get("timelapse_play") else "⏸ 停止"
+        if st.button(play_label, key="timelapse_toggle"):
+            st.session_state.timelapse_play = not st.session_state.get("timelapse_play", False)
+    with c_speed:
+        st.session_state.timelapse_interval = st.select_slider(
+            "再生間隔（秒）",
+            options=[0.2, 0.4, 0.6, 0.8, 1.0, 1.2],
+            value=st.session_state.get("timelapse_interval", 0.8),
+            key="timelapse_interval_slider",
+        )
+
     max_idx = max(0, total_frames - 1)
     current_default = min(st.session_state.get("timelapse_index", 0), max_idx)
     idx = st.slider(
@@ -1267,6 +1309,13 @@ def render_meteo_section() -> None:
         st.metric("風速(m/s)", f"{current_row['wind_speed_10m']:.1f}")
 
     st.caption("※ スライダーを左右に動かして、48時間分の変化をタイムラプスのように確認できます。")
+
+    if st.session_state.get("timelapse_play"):
+        time.sleep(float(st.session_state.get("timelapse_interval", 0.8)))
+        try:
+            st.rerun()
+        except Exception:
+            st.experimental_rerun()
 
 
 def main() -> None:
